@@ -9,8 +9,8 @@
 <h4 align="center">A simple bash script for full recon</h4>
 
 <p align="center">
-  <a href="https://github.com/six2dez/reconftw/releases/tag/v1.2.0">
-    <img src="https://img.shields.io/badge/release-v1.2.0-green">
+  <a href="https://github.com/six2dez/reconftw/releases/tag/v1.2.1">
+    <img src="https://img.shields.io/badge/release-v1.2.1-green">
   </a>
    </a>
   <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">
@@ -235,7 +235,7 @@ resolvers=${tools}/resolvers.txt
 
 - Domain information parser ([domainbigdata](https://domainbigdata.com/))
 - Emails addresses and users ([theHarvester](https://github.com/laramies/theHarvester))
-- Password leaks ([pwndb](https://github.com/davidtavarez/pwndb))
+- Password leaks ([pwndb](https://github.com/davidtavarez/pwndb) and [H8mail](https://github.com/khast3x/h8mail))
 - Metadata finder ([MetaFinder](https://github.com/Josue87/MetaFinder))
 - Google Dorks ([degoogle_hunter](https://github.com/six2dez/degoogle_hunter))
 - Github Dorks ([GitDorker](https://github.com/obheda12/GitDorker))  
