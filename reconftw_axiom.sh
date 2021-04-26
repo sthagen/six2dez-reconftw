@@ -525,10 +525,10 @@ function sub_recursive(){
 				done
 				eval axiom-scan .tmp/brute_recursive_wordlist.txt -m puredns-resolve -o .tmp/brute_recursive_result.txt $DEBUG_STD
 				cat .tmp/brute_recursive_result.txt | anew -q .tmp/brute_recursive.txt
-				eval axiom-scan .tmp/brute_recursive.txt -m dnscewl -o .tmp/DNScewl1_recursive_.txt $DEBUG_STD && cat .tmp/DNScewl1_recursive_.txt | grep ".$domain$" > .tmp/DNScewl1_recursive.txt
+				eval axiom-scan .tmp/brute_recursive.txt -m dnscewl -o .tmp/DNScewl1_recursive_.txt $DEBUG_STD && eval cat .tmp/DNScewl1_recursive_.txt $DEBUG_ERROR | grep ".$domain$" > .tmp/DNScewl1_recursive.txt
 				eval axiom-scan .tmp/DNScewl1_recursive.txt -m puredns-resolve -o .tmp/permute1_recursive_tmp.txt $DEBUG_STD
 				eval cat .tmp/permute1_recursive_tmp.txt $DEBUG_ERROR | anew -q .tmp/permute1_recursive.txt
-				eval axiom-scan .tmp/permute1_recursive.txt -m dnscewl -o .tmp/DNScewl2_recursive_.txt $DEBUG_STD && cat .tmp/DNScewl2_recursive_.txt | grep ".$domain$" > .tmp/DNScewl2_recursive.txt
+				eval axiom-scan .tmp/permute1_recursive.txt -m dnscewl -o .tmp/DNScewl2_recursive_.txt $DEBUG_STD && eval cat .tmp/DNScewl2_recursive_.txt $DEBUG_ERROR | grep ".$domain$" > .tmp/DNScewl2_recursive.txt
 				eval axiom-scan .tmp/DNScewl2_recursive.txt -m puredns-resolve -o .tmp/permute2_recursive_tmp.txt $DEBUG_STD
 				eval cat .tmp/permute1_recursive.txt .tmp/permute2_recursive_tmp.txt $DEBUG_ERROR | anew -q .tmp/permute_recursive.txt
 
@@ -552,7 +552,7 @@ function subtakeover(){
 		then
 			start_func "Looking for possible subdomain takeover"
 			touch .tmp/tko.txt
-			eval axiom-scan webs/webs.txt -m nuclei -wL /home/op/recon/nuclei/nuclei-templates/takeovers/ -o .tmp/tko.txt $DEBUG_STD
+			eval axiom-scan webs/webs.txt -m nuclei -w /home/op/recon/nuclei/takeovers/ -o .tmp/tko.txt $DEBUG_STD
 			NUMOFLINES=$(eval cat .tmp/tko.txt $DEBUG_ERROR | anew webs/takeover.txt | wc -l)
 			if [ "$NUMOFLINES" -gt 0 ]; then
 				notification "${NUMOFLINES} new possible takeovers found" info
@@ -717,8 +717,8 @@ function portscan(){
 				echo "$sub $(dig +short a $sub | tail -n1)" | anew -q .tmp/subs_ips.txt
 			done
 			awk '{ print $2 " " $1}' .tmp/subs_ips.txt | sort -k2 -n | anew -q hosts/subs_ips_vhosts.txt
-			eval cat hosts/subs_ips_vhosts.txt $DEBUG_ERROR | cut -d ' ' -f1 | egrep -iv "^(127|10|169|172|192)\." | anew -q hosts/ips.txt
-			eval axiom-scan webs/webs.txt -m cf-check -o .tmp/ips_nowaf_.txt $DEBUG_STD && cat .tmp/ips_nowaf_.txt | egrep -iv "^(127|10|169|172|192)\." | anew -q .tmp/ips_nowaf.txt
+			eval cat hosts/subs_ips_vhosts.txt $DEBUG_ERROR | cut -d ' ' -f1 | egrep -iv "^(127|10|169|172|192)\." | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | anew -q hosts/ips.txt
+			eval axiom-scan webs/webs.txt -m cf-check -o .tmp/ips_nowaf_.txt $DEBUG_STD && cat .tmp/ips_nowaf_.txt | egrep -iv "^(127|10|169|172|192)\." | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | anew -q .tmp/ips_nowaf.txt
 			printf "${bblue}\n Resolved IP addresses (No WAF) ${reset}\n\n";
 			eval cat .tmp/ips_nowaf.txt $DEBUG_ERROR | sort
 
@@ -750,7 +750,7 @@ function cloudprovider(){
 		then
 			start_func "Cloud provider check"
 			cd $tools/ip2provider
-			eval cat $dir/hosts/ips.txt | ./ip2provider.py | anew -q $dir/hosts/cloud_providers.txt $DEBUG_STD
+			eval cat $dir/hosts/ips.txt | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | ./ip2provider.py | anew -q $dir/hosts/cloud_providers.txt $DEBUG_STD
 			cd $dir
 			end_func "Results are saved in hosts/cloud_providers.txt" ${FUNCNAME[0]}
 		else
@@ -1001,7 +1001,7 @@ function jschecks(){
 				printf "${yellow} Running : Gathering secrets 4/5${reset}\n"
 				if [ -s "js/js_livelinks.txt" ]
 				then
-					eval axiom-scan js/js_livelinks.txt -m nuclei -wL /home/op/recon/nuclei/nuclei-templates/exposures/ -r $resolvers_trusted -o js/js_secrets.txt $DEBUG_STD
+					eval axiom-scan js/js_livelinks.txt -m nuclei -w /home/op/recon/nuclei/exposures/ -r $resolvers_trusted -o js/js_secrets.txt $DEBUG_STD
 				fi
 				printf "${yellow} Running : Building wordlist 5/5${reset}\n"
 				if [ -s "js/js_livelinks.txt" ]
@@ -1078,19 +1078,19 @@ function xss(){
 		cat gf/xss.txt | qsreplace FUZZ | Gxss -c 100 -p Xss | anew -q .tmp/xss_reflected.txt
 		if [ "$DEEP" = true ] ; then
 			if [ -n "$XSS_SERVER" ]; then
-				eval cat .tmp/xss_reflected.txt | dalfox pipe --silence --no-color --no-spinner --mass --mass-worker 100 --multicast --skip-bav -b ${XSS_SERVER} -w $DALFOX_THREADS $DEBUG_ERROR | anew -q vulns/xss.txt
+				eval axiom-scan .tmp/xss_reflected.txt -m dalfox --mass --mass-worker 100 --multicast --skip-bav -b ${XSS_SERVER} -w $DALFOX_THREADS -o vulns/xss.txt $DEBUG_STD
 			else
 				printf "${yellow}\n No XSS_SERVER defined, blind xss skipped\n\n"
-				eval cat .tmp/xss_reflected.txt | dalfox pipe --silence --no-color --no-spinner --mass --mass-worker 100 --multicast --skip-bav -w $DALFOX_THREADS $DEBUG_ERROR | anew -q vulns/xss.txt
+				eval axiom-scan .tmp/xss_reflected.txt -m dalfox --mass --mass-worker 100 --multicast --skip-bav -w $DALFOX_THREADS -o vulns/xss.txt $DEBUG_STD
 			fi
 		else
 			if [[ $(cat .tmp/xss_reflected.txt | wc -l) -le 500 ]]
 			then
 				if [ -n "$XSS_SERVER" ]; then
-					eval cat .tmp/xss_reflected.txt | dalfox pipe --silence --no-color --no-spinner --mass --mass-worker 100 --multicast --skip-bav --skip-grepping --skip-mining-all --skip-mining-dict -b ${XSS_SERVER} -w $DALFOX_THREADS $DEBUG_ERROR | anew -q vulns/xss.txt
+					eval axiom-scan .tmp/xss_reflected.txt -m dalfox --mass --mass-worker 100 --multicast --skip-bav --skip-grepping --skip-mining-all --skip-mining-dict -b ${XSS_SERVER} -w $DALFOX_THREADS -o vulns/xss.txt $DEBUG_STD
 				else
 					printf "${yellow}\n No XSS_SERVER defined, blind xss skipped\n\n"
-					eval cat .tmp/xss_reflected.txt | dalfox pipe --silence --no-color --no-spinner --mass --mass-worker 100 --multicast --skip-bav --skip-grepping --skip-mining-all --skip-mining-dict -w $DALFOX_THREADS $DEBUG_ERROR | anew -q vulns/xss.txt
+					eval axiom-scan .tmp/xss_reflected.txt -m dalfox --mass --mass-worker 100 --multicast --skip-bav --skip-grepping --skip-mining-all --skip-mining-dict -w $DALFOX_THREADS -o vulns/xss.txt $DEBUG_STD
 				fi
 			else
 				printf "${bred} Skipping XSS: Too Much URLs to test, try with --deep flag${reset}\n"
@@ -1296,7 +1296,7 @@ function spraying(){
 		then
 			start_func "Password spraying"
 			cd $tools/brutespray
-			eval python3 $tools/brutespray/brutespray.py --file $dir/hosts/portscan_active.txt --threads $BRUTESPRAY_THREADS --hosts $BRUTESPRAY_CONCURRENCE -o $dir/hosts/brutespray.txt $DEBUG_STD
+			eval python3 brutespray.py --file $dir/hosts/portscan_active.txt --threads $BRUTESPRAY_THREADS --hosts $BRUTESPRAY_CONCURRENCE -o $dir/hosts/brutespray.txt $DEBUG_STD
 			cd $dir
 			end_func "Results are saved in hosts/brutespray.txt" ${FUNCNAME[0]}
 		else
@@ -1483,29 +1483,6 @@ function start(){
 
 	printf "\n"
 	printf "${bred} Target: ${domain}\n\n"
-}
-
-#Don't call me, I am not finished yet
-function html_report(){
-	eval cp "static/index.html" $dir $DEBUG_ERROR
-	#changing title to target.com
-	sed -i "s/CHANGE_ME_TITLE/$domain/g" "$dir/index.html"
-	#subdomains
-	lineToAppend=""
-	if [ -f "$dir/subdomains/subdomains.txt" ]; then
-		cat $dir/subdomains/subdomains.txt | while read sub; do lineToAppend="$lineToAppend <li><a href='$sub'>$sub</a></li><br>" ; done
-	else
-		lineToAppend="<li><a href='\#'>No Subdomains Found For Target</a></li><br>"
-	fi
-	sed -i "s/CHANGE_ME_SUB_DOMAINS/$lineToAppend/g" "$dir/index.html"
-	#Screenshots
-	lineToAppend=""
-
-	#OSINT
-	lineToAppend=""
-	# @TODO concatinate dorks and links and create a table cia HTML
-	tmpDorks=$(cat $dir/osint/gitdorks.txt | grep git | cut -d'|'  -f 1 | cut -d'='  -f 2)
-	tmpLinks=$(cat $dir/osint/gitdorks.txt | grep git | cut -d'|'  -f 2)
 }
 
 function end(){
