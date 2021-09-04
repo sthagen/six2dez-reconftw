@@ -8,8 +8,8 @@
 
 
 <p align="center">
-  <a href="https://github.com/six2dez/reconftw/releases/tag/v2.0.0">
-    <img src="https://img.shields.io/badge/release-v2.0.0-green">
+  <a href="https://github.com/six2dez/reconftw/releases/tag/v2.0.1">
+    <img src="https://img.shields.io/badge/release-v2.0.1-green">
   </a>
    </a>
   <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">
@@ -55,8 +55,14 @@ So, what are you waiting for Go! Go! Go! :boom:
 - [Usage:](#usage)
 - [Example Usage:](#example-usage)
 - [Axiom Support: :cloud:](#axiom-support-cloud)
+- [BBRF Support: :computer:](#bbrf-support-computer)
 - [Sample video:](#sample-video)
 - [:fire: Features :fire:](#fire-features-fire)
+  - [Osint](#osint)
+  - [Subdomains](#subdomains)
+  - [Hosts](#hosts)
+  - [Webs](#webs)
+  - [Extras](#extras)
 - [Mindmap/Workflow](#mindmapworkflow)
   - [Data Keep](#data-keep)
     - [Main commands:](#main-commands)
@@ -426,6 +432,8 @@ reset='\033[0m'
   - DNS Records ([dnsx](https://github.com/projectdiscovery/dnsx))
   - Google Analytics ID ([AnalyticsRelationships](https://github.com/Josue87/AnalyticsRelationships))
   - Recursive search.
+  - Subdomains takeover ([nuclei](https://github.com/projectdiscovery/nuclei))
+  - DNS takeover ([dnstake](https://github.com/pwnesia/dnstake))
   - DNS Zone Transfer ([dnsrecon](https://github.com/darkoperator/dnsrecon))
 
 ## Hosts
@@ -436,14 +444,13 @@ reset='\033[0m'
 - Cloud providers check ([clouddetect](https://github.com/99designs/clouddetect))
 
 ## Webs
-- Nuclei Sub TKO templates ([nuclei](https://github.com/projectdiscovery/nuclei))
 - Web Prober ([httpx](https://github.com/projectdiscovery/httpx) and [unimap](https://github.com/Edu4rdSHL/unimap))
 - Web screenshot ([webscreenshot](https://github.com/maaaaz/webscreenshot) or [gowitness](https://github.com/sensepost/gowitness))
 - Web templates scanner ([nuclei](https://github.com/projectdiscovery/nuclei) and [nuclei geeknik](https://github.com/geeknik/the-nuclei-templates.git))
 - Url extraction ([waybackurls](https://github.com/tomnomnom/waybackurls), [gauplus](https://github.com/bp0lr/gauplus), [gospider](https://github.com/jaeles-project/gospider), [github-endpoints](https://gist.github.com/six2dez/d1d516b606557526e9a78d7dd49cacd3) and [JSA](https://github.com/w9w/JSA))
 - URLPatterns Search ([gf](https://github.com/tomnomnom/gf) and [gf-patterns](https://github.com/1ndianl33t/Gf-Patterns))
 - XSS ([dalfox](https://github.com/hahwul/dalfox))
-- Open redirect ([Openredirex](https://github.com/devanshbatham/OpenRedireX))
+- Open redirect ([Oralyzer](https://github.com/r0075h3ll/Oralyzer))
 - SSRF (headers [interactsh](https://github.com/projectdiscovery/interactsh) and param values with [ffuf](https://github.com/ffuf/ffuf))
 - CRLF ([crlfuzz](https://github.com/dwisiswant0/crlfuzz))
 - Favicon Real IP ([fav-up](https://github.com/pielco11/fav-up))
