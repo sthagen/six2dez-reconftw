@@ -28,13 +28,14 @@ gotools["crlfuzz"]="GO111MODULE=on go get -v github.com/dwisiswant0/crlfuzz/cmd/
 gotools["dalfox"]="GO111MODULE=on go get -v github.com/hahwul/dalfox/v2"
 gotools["puredns"]="GO111MODULE=on go get -v github.com/d3mondev/puredns/v2"
 gotools["resolveDomains"]="go get -u -v github.com/Josue87/resolveDomains"
-gotools["interactsh-client"]="GO111MODULE=on go get -v github.com/projectdiscovery/interactsh/cmd/interactsh-client"
+gotools["interactsh-client"]="go install -v github.com/projectdiscovery/interactsh/cmd/interactsh-client@latest"
 gotools["analyticsrelationships"]="go get -u -v github.com/Josue87/analyticsrelationships"
 gotools["gotator"]="go get -u -v github.com/Josue87/gotator"
 gotools["roboxtractor"]="go get -u -v github.com/Josue87/roboxtractor"
 gotools["mapcidr"]="GO111MODULE=on go get -v github.com/projectdiscovery/mapcidr/cmd/mapcidr"
 gotools["clouddetect"]="go get github.com/99designs/clouddetect/cli/clouddetect"
 gotools["dnstake"]="go install github.com/pwnesia/dnstake/cmd/dnstake@latest"
+gotools["gowitness"]="go get -u github.com/sensepost/gowitness"
 
 declare -A repos
 repos["uDork"]="m3n0sd0n4ld/uDork"
@@ -250,17 +251,14 @@ if [ "True" = "$IS_ARM" ]
         eval $SUDO mv findomain-armv7 /usr/local/bin/findomain
     else
         eval wget -N -c https://github.com/Findomain/Findomain/releases/latest/download/findomain-linux $DEBUG_STD
-        eval wget -N -c https://github.com/sensepost/gowitness/releases/download/2.3.4/gowitness-2.3.4-linux-amd64 $DEBUG_STD
         eval wget -N -c https://github.com/Edu4rdSHL/unimap/releases/download/0.4.0/unimap-linux $DEBUG_STD
         eval wget -N -c https://github.com/dwisiswant0/ppfuzz/releases/download/v1.0.1/ppfuzz-v1.0.1-x86_64-unknown-linux-musl.tar.gz $DEBUG_STD
         eval $SUDO tar -C /usr/local/bin/ -xzf ppfuzz-v1.0.1-x86_64-unknown-linux-musl.tar.gz  $DEBUG_STD
         eval $SUDO rm -rf ppfuzz-v1.0.1-x86_64-unknown-linux-musl.tar.gz  $DEBUG_STD
-        eval $SUDO mv gowitness-2.3.4-linux-amd64 /usr/local/bin/gowitness
         eval $SUDO mv findomain-linux /usr/local/bin/findomain
         eval $SUDO mv unimap-linux /usr/local/bin/unimap
 fi
 eval $SUDO chmod 755 /usr/local/bin/findomain
-eval $SUDO chmod 755 /usr/local/bin/gowitness
 eval $SUDO chmod 755 /usr/local/bin/unimap
 eval $SUDO chmod 755 /usr/local/bin/ppfuzz
 eval $SUDO chmod +x $tools/uDork/uDork.sh
@@ -271,7 +269,7 @@ printf "${bblue}\n Running: Downloading required files ${reset}\n\n"
 ## Downloads
 eval wget -nc -O ~/.config/amass/config.ini https://raw.githubusercontent.com/OWASP/Amass/master/examples/config.ini $DEBUG_STD
 eval wget -nc -O ~/.gf/potential.json https://raw.githubusercontent.com/devanshbatham/ParamSpider/master/gf_profiles/potential.json $DEBUG_STD
-eval wget -nc -O ~/.config/notify/provider-config.yaml https://gist.githubusercontent.com/six2dez/23a996bca189a11e88251367e6583053/raw/a66c4d8cf47a3bc95f5e9ba84773428662ea760c/notify_sample.conf $DEBUG_STD
+eval wget -nc -O ~/.config/notify/provider-config.yaml https://gist.githubusercontent.com/six2dez/23a996bca189a11e88251367e6583053/raw $DEBUG_STD
 eval wget -nc -O getjswords.py https://raw.githubusercontent.com/m4ll0k/Bug-Bounty-Toolz/master/getjswords.py $DEBUG_STD
 eval wget -nc -O subdomains_big.txt https://wordlists-cdn.assetnote.io/data/manual/best-dns-wordlist.txt $DEBUG_STD
 eval wget -O resolvers_trusted.txt https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw $DEBUG_STD
@@ -285,6 +283,7 @@ eval wget -O custom_udork.txt https://gist.githubusercontent.com/six2dez/7245cad
 eval wget -O axiom_config.sh https://gist.githubusercontent.com/six2dez/6e2d9f4932fd38d84610eb851014b26e/raw $DEBUG_STD
 eval wget -O ~/nuclei-templates/extra_templates/ssrf.yaml https://raw.githubusercontent.com/NagliNagli/BountyTricks/main/ssrf.yaml $DEBUG_STD
 eval wget -O ~/nuclei-templates/extra_templates/sap-redirect.yaml https://raw.githubusercontent.com/NagliNagli/BountyTricks/main/sap-redirect.yaml $DEBUG_STD
+eval $SUDO chmod +x $tools/axiom_config.sh
 
 ## Last check
 if [ "$double_check" = "true" ]; then
@@ -337,8 +336,8 @@ printf "${bblue} Running: Performing last configurations ${reset}\n\n"
 if [ ! -s "resolvers.txt" ] || [ $(find "resolvers.txt" -mtime +1 -print) ]; then
     printf "${yellow} Resolvers seem older than 1 day\n Generating custom resolvers... ${reset}\n\n"
     eval rm -f resolvers.txt &>/dev/null
-    eval dnsvalidator -tL https://public-dns.info/nameservers.txt -threads 100 -o resolvers.txt $DEBUG_STD
-	eval dnsvalidator -tL https://raw.githubusercontent.com/blechschmidt/massdns/master/lists/resolvers.txt -threads 100 -o tmp_resolvers $DEBUG_STD
+    eval dnsvalidator -tL https://public-dns.info/nameservers.txt -threads $DNSVALIDATOR_THREADS -o resolvers.txt $DEBUG_STD
+	eval dnsvalidator -tL https://raw.githubusercontent.com/blechschmidt/massdns/master/lists/resolvers.txt -threads $DNSVALIDATOR_THREADS -o tmp_resolvers $DEBUG_STD
 	eval cat tmp_resolvers $DEBUG_ERROR | anew -q resolvers.txt
 	eval rm -f tmp_resolvers $DEBUG_STD
 fi
@@ -349,6 +348,6 @@ eval strip -s $HOME/go/bin/* $DEBUG_STD
 
 eval $SUDO cp $HOME/go/bin/* /usr/local/bin/ $DEBUG_STD
 
-printf "${yellow} Remember set your api keys:\n - amass (~/.config/amass/config.ini)\n - subfinder (~/.config/subfinder/config.yaml)\n - GitHub (~/Tools/.github_tokens)\n - SHODAN (SHODAN_API_KEY in reconftw.cfg)\n - SSRF Server (COLLAB_SERVER in reconftw.cfg) \n - Blind XSS Server (XSS_SERVER in reconftw.cfg) \n - notify (~/.config/notify/provider-config.yaml) \n - theHarvester (~/Tools/theHarvester/api-keys.yml)\n - H8mail (~/Tools/h8mail_config.ini)\n - uDork FB cookie (UDORK_COOKIE in reconftw.cfg)\n\n${reset}"
+printf "${yellow} Remember set your api keys:\n - amass (~/.config/amass/config.ini)\n - subfinder (~/.config/subfinder/config.yaml)\n - GitHub (~/Tools/.github_tokens)\n - SHODAN (SHODAN_API_KEY in reconftw.cfg or env var)\n - SSRF Server (COLLAB_SERVER in reconftw.cfg or env var) \n - Blind XSS Server (XSS_SERVER in reconftw.cfg or env var) \n - notify (~/.config/notify/provider-config.yaml) \n - theHarvester (~/Tools/theHarvester/api-keys.yml)\n - H8mail (~/Tools/h8mail_config.ini)\n - uDork FB cookie (UDORK_COOKIE in reconftw.cfg or env var)\n - WHOISXML API (WHOISXML_API in reconftw.cfg or env var)\n\n\n${reset}"
 printf "${bgreen} Finished!${reset}\n\n"
 printf "\n\n${bgreen}#######################################################################${reset}\n"
