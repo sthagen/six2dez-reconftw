@@ -8,8 +8,8 @@
 
 
 <p align="center">
-  <a href="https://github.com/six2dez/reconftw/releases/tag/v2.3.1">
-    <img src="https://img.shields.io/badge/release-v2.3.1-green">
+  <a href="https://github.com/six2dez/reconftw/releases/tag/v2.3.2">
+    <img src="https://img.shields.io/badge/release-v2.3.2-green">
   </a>
    </a>
   <a href="https://www.gnu.org/licenses/gpl-3.0.en.html">
@@ -434,7 +434,7 @@ reset='\033[0m'
 - Emails addresses and users ([theHarvester](https://github.com/laramies/theHarvester) and [emailfinder](https://github.com/Josue87/EmailFinder))
 - Password leaks ([pwndb](https://github.com/davidtavarez/pwndb) and [H8mail](https://github.com/khast3x/h8mail))
 - Metadata finder ([MetaFinder](https://github.com/Josue87/MetaFinder))
-- Google Dorks ([degoogle_hunter](https://github.com/six2dez/degoogle_hunter))
+- Google Dorks ([dorks_hunter](https://github.com/six2dez/dorks_hunter))
 - Github Dorks ([gitdorks_go](https://github.com/damit5/gitdorks_go))
 
 ## Subdomains
