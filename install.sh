@@ -47,7 +47,7 @@ fi
 declare -A gotools
 gotools["gf"]="go install -v github.com/tomnomnom/gf@latest"
 gotools["qsreplace"]="go install -v github.com/tomnomnom/qsreplace@latest"
-gotools["Amass"]="go install -v github.com/OWASP/Amass/v3/...@master"
+gotools["Amass"]="go install -v github.com/OWASP/Amass/v3/...@v3.20.0"
 gotools["ffuf"]="go install -v github.com/ffuf/ffuf@latest"
 gotools["github-subdomains"]="go install -v github.com/gwen001/github-subdomains@latest"
 gotools["waybackurls"]="go install -v github.com/tomnomnom/waybackurls@latest"
@@ -110,6 +110,7 @@ repos["urless"]="xnl-h4ck3r/urless"
 repos["trufflehog"]="trufflesecurity/trufflehog"
 repos["smuggler"]="defparam/smuggler"
 repos["Web-Cache-Vulnerability-Scanner"]="Hackmanit/Web-Cache-Vulnerability-Scanner"
+repos["regulator"]="cramppet/regulator"
 
 printf "\n\n${bgreen}#######################################################################${reset}\n"
 printf "${bgreen} reconFTW installer/updater script ${reset}\n\n"
@@ -150,8 +151,8 @@ install_brew(){
     export PATH="/opt/homebrew/opt/gnu-getopt/bin:$PATH"
     echo 'export PATH="/opt/homebrew/opt/gnu-getopt/bin:$PATH"' >> ~/.zshrc
     eval brew services start tor $DEBUG_STD
-    eval brew install rustup $DEBUG_STD
-    eval rustup-init $DEBUG_STD
+    brew install rustup
+    rustup-init
     eval cargo install ripgen $DEBUG_STD
 }
 
@@ -295,7 +296,7 @@ cd ~/nuclei-templates/extra_templates && eval git pull $DEBUG_STD
 cd "$dir" || { echo "Failed to cd to $dir in ${FUNCNAME[0]} @ line ${LINENO}"; exit 1; }
 eval git clone --depth 1 https://github.com/sqlmapproject/sqlmap.git $dir/sqlmap $DEBUG_STD
 eval git clone --depth 1 https://github.com/drwetter/testssl.sh.git $dir/testssl.sh $DEBUG_STD
-eval $SUDO git clone https://github.com/offensive-security/exploitdb.git /opt/exploitdb $DEBUG_STD
+eval $SUDO git clone https://gitlab.com/exploit-database/exploitdb /opt/exploitdb $DEBUG_STD
 eval $SUDO ln -sf /opt/exploitdb/searchsploit /usr/local/bin/searchsploit $DEBUG_STD
 
 # Standard repos installation
@@ -329,7 +330,7 @@ for repo in "${!repos[@]}"; do
     elif [ "Gf-Patterns" = "$repo" ]; then
         eval mv ./*.json ~/.gf $DEBUG_ERROR
     elif [ "trufflehog" = "$repo" ]; then
-        go install
+        eval go install $DEBUG_STD
     fi
     cd "$dir" || { echo "Failed to cd to $dir in ${FUNCNAME[0]} @ line ${LINENO}"; exit 1; }
 done
@@ -374,7 +375,7 @@ eval $SUDO strip -s /usr/local/bin/unimap $DEBUG_STD
 eval $SUDO chmod 755 /usr/local/bin/ppfuzz
 eval $SUDO strip -s /usr/local/bin/ppfuzz $DEBUG_STD
 eval notify $DEBUG_STD
-eval subfinder -h $DEBUG_STD
+eval subfinder $DEBUG_STD
 
 printf "${bblue}\n Running: Downloading required files ${reset}\n\n"
 ## Downloads
@@ -383,8 +384,8 @@ printf "${bblue}\n Running: Downloading required files ${reset}\n\n"
 wget -q -O - https://raw.githubusercontent.com/devanshbatham/ParamSpider/master/gf_profiles/potential.json > ~/.gf/potential.json
 wget -q -O - https://raw.githubusercontent.com/m4ll0k/Bug-Bounty-Toolz/master/getjswords.py > ${tools}/getjswords.py
 wget -q -O - https://wordlists-cdn.assetnote.io/data/manual/best-dns-wordlist.txt > ${subs_wordlist_big}
-wget -q -O - https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw > ${resolvers_trusted}
-wget -q -O - https://raw.githubusercontent.com/proabiral/Fresh-Resolvers/master/resolvers.txt > ${resolvers} 
+wget -q -O - https://raw.githubusercontent.com/six2dez/resolvers_reconftw/main/resolvers_trusted.txt > ${resolvers_trusted}
+wget -q -O - https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt > ${resolvers} 
 wget -q -O - https://gist.github.com/six2dez/a307a04a222fab5a57466c51e1569acf/raw > ${subs_wordlist}
 wget -q -O - https://gist.github.com/six2dez/ffc2b14d283e8f8eff6ac83e20a3c4b4/raw > ${tools}/permutations_list.txt
 wget -q -O - https://raw.githubusercontent.com/six2dez/OneListForAll/main/onelistforallmicro.txt > ${fuzz_wordlist}
@@ -452,16 +453,16 @@ if [ "$generate_resolvers" = true ]; then
 		dnsvalidator -tL https://raw.githubusercontent.com/blechschmidt/massdns/master/lists/resolvers.txt -threads $DNSVALIDATOR_THREADS -o tmp_resolvers &>/dev/null
 		[ -s "tmp_resolvers" ] && cat tmp_resolvers | anew -q $resolvers
 		[ -s "tmp_resolvers" ] && rm -f tmp_resolvers &>/dev/null
-		[ ! -s "$resolvers" ] && wget -q -O - https://raw.githubusercontent.com/proabiral/Fresh-Resolvers/master/resolvers.txt > ${resolvers}
-        [ ! -s "$resolvers_trusted" ] && wget -q -O - https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw > ${resolvers_trusted}
+		[ ! -s "$resolvers" ] && wget -q -O - https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt > ${resolvers}
+        [ ! -s "$resolvers_trusted" ] && wget -q -O - https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt > ${resolvers_trusted}
 		printf "${yellow} Resolvers updated\n ${reset}\n\n"
 	fi
 	generate_resolvers=false
 else
 	[ ! -s "$resolvers" ] || if [[ $(find "$resolvers" -mtime +1 -print) ]] ; then
 		 ${reset}"\n\nChecking resolvers lists...\n Accurate resolvers are the key to great results\n Downloading new resolvers ${reset}\n\n"
-		wget -q -O - https://raw.githubusercontent.com/proabiral/Fresh-Resolvers/master/resolvers.txt > ${resolvers}
-        wget -q -O - https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw > ${resolvers_trusted}
+		wget -q -O - https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt > ${resolvers}
+        wget -q -O - https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt > ${resolvers_trusted}
 		printf "${yellow} Resolvers updated\n ${reset}\n\n"
 	fi
 fi
