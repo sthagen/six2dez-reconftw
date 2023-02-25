@@ -65,6 +65,8 @@ So, what are you waiting for? Go! Go! Go! :boom:
   - [Extras](#extras)
 - [Mindmap/Workflow](#mindmapworkflow)
   - [Data Keep](#data-keep)
+    - [Makefile](#makefile)
+    - [Manual](#manual)
     - [Main commands:](#main-commands)
   - [How to contribute:](#how-to-contribute)
   - [Need help? :information\_source:](#need-help-information_source)
@@ -174,7 +176,7 @@ GOOGLE_DORKS=true
 GITHUB_DORKS=true
 GITHUB_REPOS=true
 METADATA=true # Fetch metadata from indexed office documents
-EMAILS=true # Fetch emails from differents sites 
+EMAILS=true # Fetch emails from differents sites
 DOMAIN_INFO=true # whois info
 REVERSE_WHOIS=true # amass intel reverse whois info, takes some time
 IP_INFO=true    # Reverse IP search, geolocation and whois
@@ -201,7 +203,7 @@ ZONETRANSFER=true # Check zone transfer
 S3BUCKETS=true # Check S3 buckets misconfigs
 REVERSE_IP=false # Check reverse IP subdomain search (set True if your target is CIDR/IP)
 TLS_PORTS="21,22,25,80,110,135,143,261,271,324,443,448,465,563,614,631,636,664,684,695,832,853,854,990,993,989,992,994,995,1129,1131,1184,2083,2087,2089,2096,2221,2252,2376,2381,2478,2479,2482,2484,2679,2762,3077,3078,3183,3191,3220,3269,3306,3410,3424,3471,3496,3509,3529,3539,3535,3660,36611,3713,3747,3766,3864,3885,3995,3896,4031,4036,4062,4064,4081,4083,4116,4335,4336,4536,4590,4740,4843,4849,5443,5007,5061,5321,5349,5671,5783,5868,5986,5989,5990,6209,6251,6443,6513,6514,6619,6697,6771,7202,7443,7673,7674,7677,7775,8243,8443,8991,8989,9089,9295,9318,9443,9444,9614,9802,10161,10162,11751,12013,12109,14143,15002,16995,41230,16993,20003"
-INSCOPE=false # Uses inscope tool to filter the scope, requires .scope file in reconftw folder 
+INSCOPE=false # Uses inscope tool to filter the scope, requires .scope file in reconftw folder
 
 # Web detection
 WEBPROBESIMPLE=true # Web probing on 80/443
@@ -215,7 +217,7 @@ AXIOM_SCREENSHOT_MODULE=webscreenshot # Choose between aquatone,gowitness,webscr
 
 # Host
 FAVICON=true # Check Favicon domain discovery
-PORTSCANNER=true # Enable or disable the whole Port scanner module 
+PORTSCANNER=true # Enable or disable the whole Port scanner module
 PORTSCAN_PASSIVE=true # Port scanner with Shodan
 PORTSCAN_ACTIVE=true # Port scanner with nmap
 CDN_IP=true # Check which IPs belongs to CDN
@@ -280,7 +282,7 @@ HEADER="User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:72.0) Gecko/20100101 Fire
 FFUF_THREADS=40
 HTTPX_THREADS=50
 HTTPX_UNCOMMONPORTS_THREADS=100
-GOSPIDER_THREADS=20
+KATANA_THREADS=20
 BRUTESPRAY_THREADS=20
 BRUTESPRAY_CONCURRENCE=10
 GAU_THREADS=10
@@ -469,7 +471,7 @@ reset='\033[0m'
   - NOERROR subdomain discovery ([dnsx](https://github.com/projectdiscovery/dnsx), more info [here](https://www.securesystems.de/blog/enhancing-subdomain-enumeration-ents-and-noerror/))
   - Bruteforce ([puredns](https://github.com/d3mondev/puredns))
   - Permutations ([Gotator](https://github.com/Josue87/gotator), [ripgen](https://github.com/resyncgg/ripgen) and [regulator](https://github.com/cramppet/regulator))
-  - JS files & Source Code Scraping ([gospider](https://github.com/jaeles-project/gospider))
+  - JS files & Source Code Scraping ([katana](https://github.com/projectdiscovery/katana))
   - DNS Records ([dnsx](https://github.com/projectdiscovery/dnsx))
   - Google Analytics ID ([AnalyticsRelationships](https://github.com/Josue87/AnalyticsRelationships))
   - TLS handshake ([tlsx](https://github.com/projectdiscovery/tlsx))
@@ -492,7 +494,7 @@ reset='\033[0m'
 - Web screenshoting ([webscreenshot](https://github.com/maaaaz/webscreenshot) or [gowitness](https://github.com/sensepost/gowitness))
 - Web templates scanner ([nuclei](https://github.com/projectdiscovery/nuclei) and [nuclei geeknik](https://github.com/geeknik/the-nuclei-templates.git))
 - CMS Scanner ([CMSeeK](https://github.com/Tuhinshubhra/CMSeeK))
-- Url extraction ([waymore](https://github.com/xnl-h4ck3r/waymore), [gospider](https://github.com/jaeles-project/gospider), [github-endpoints](https://gist.github.com/six2dez/d1d516b606557526e9a78d7dd49cacd3) and [JSA](https://github.com/w9w/JSA))
+- Url extraction ([waymore](https://github.com/xnl-h4ck3r/waymore), [katana](https://github.com/projectdiscovery/katana), [github-endpoints](https://gist.github.com/six2dez/d1d516b606557526e9a78d7dd49cacd3) and [JSA](https://github.com/w9w/JSA))
 - URL patterns Search and filtering ([urless](https://github.com/xnl-h4ck3r/urless), [gf](https://github.com/tomnomnom/gf) and [gf-patterns](https://github.com/1ndianl33t/Gf-Patterns))
 - Favicon Real IP ([fav-up](https://github.com/pielco11/fav-up))
 - Javascript analysis ([subjs](https://github.com/lc/subjs), [JSA](https://github.com/w9w/JSA), [xnLinkFinder](https://github.com/xnl-h4ck3r/xnLinkFinder), [getjswords](https://github.com/m4ll0k/BBTz))
@@ -511,7 +513,7 @@ reset='\033[0m'
 - SQLi Check ([SQLMap](https://github.com/sqlmapproject/sqlmap))
 - SSTI ([ffuf](https://github.com/ffuf/ffuf))
 - SSL tests ([testssl](https://github.com/drwetter/testssl.sh))
-- Broken Links Checker ([gospider](https://github.com/jaeles-project/gospider))
+- Broken Links Checker ([katana](https://github.com/projectdiscovery/katana))
 - Prototype Pollution ([ppfuzz](https://github.com/dwisiswant0/ppfuzz))
 - Web Cache Vulnerabilities ([Web-Cache-Vulnerability-Scanner](https://github.com/Hackmanit/Web-Cache-Vulnerability-Scanner))
 - 4XX Bypasser ([byp4xx](https://github.com/lobuhi/byp4xx))
@@ -539,7 +541,27 @@ reset='\033[0m'
 ## Data Keep
 
 Follow these simple steps to end up with a private repository with your `API Keys` and `/Recon` data.
+### Makefile
+A `Makefile` is provided to quickly bootstrap a private repo. To use it, you'll need the [Github CLI](https://cli.github.com/) installed.
 
+Once done, just run:
+```bash
+# below line is optional, the default is ~/reconftw-data
+export PRIV_REPO="$HOME/reconftw-data"
+make bootstrap
+```
+
+To sync your private repo with upstream:
+```bash
+make sync
+```
+
+To upload juicy recon data:
+```bash
+make upload
+```
+
+### Manual
 * Create a private __blank__ repository on `Git(Hub|Lab)` (Take into account size limits regarding Recon data upload)
 * Clone your project: `git clone https://gitlab.com/example/reconftw-data`
 * Get inside the cloned repository: `cd reconftw-data`
