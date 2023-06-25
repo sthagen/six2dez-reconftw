@@ -111,7 +111,7 @@ function tools_installed(){
 	which crt &>/dev/null || { printf "${bred} [*] crt			[NO]${reset}\n${reset}"; allinstalled=false;}
 	which subgpt &>/dev/null || { printf "${bred} [*] subgpt			[NO]${reset}\n${reset}"; allinstalled=false;}
 	which gitleaks &>/dev/null || { printf "${bred} [*] gitleaks			[NO]${reset}\n${reset}"; allinstalled=false;}
-	which trufflehog &>/dev/null || { printf "${bred} [*] trufflehog		[NO]${reset}\n${reset}"; allinstalled=false;}
+	which trufflehog &>/dev/null || { printf "${bred} [*] trufflehog			[NO]${reset}\n${reset}"; allinstalled=false;}
 	
 	if [ "${allinstalled}" = true ]; then
 		printf "${bgreen} Good! All installed! ${reset}\n\n"
@@ -175,9 +175,10 @@ function github_repos(){
 			enumerepo -token-string "${GH_TOKEN}" -usernames .tmp/company_name.txt -o .tmp/company_repos.txt 2>>"$LOGFILE" >/dev/null &
 			[ -s ".tmp/company_repos.txt" ] && jq -r '.[].repos[]|.url' < .tmp/company_repos.txt > .tmp/company_repos_url.txt 2>>"$LOGFILE"
 			mkdir -p .tmp/github_repos 2>>"$LOGFILE" >>"$LOGFILE"
+			mkdir -p .tmp/github 2>>"$LOGFILE" >>"$LOGFILE"
 			[ -s ".tmp/company_repos_url.txt" ] && interlace -tL .tmp/company_repos_url.txt -threads ${INTERLACE_THREADS} -c "git clone _target_  .tmp/github_repos/_cleantarget_" 2>>"$LOGFILE" >/dev/null 2>&1
 			[ -d ".tmp/github/" ] && ls .tmp/github_repos > .tmp/github_repos_folders.txt
-			[ -s ".tmp/github_repos_folders.txt" ] && interlace -tL .tmp/github_repos_folders.txt -threads ${INTERLACE_THREADS} -c "gitleaks detect --source .tmp/github_repos/_target_ --no-banner --no-color -r ./tmp/github/gh_secret_cleantarget_.json" 2>>"$LOGFILE" >/dev/null
+			[ -s ".tmp/github_repos_folders.txt" ] && interlace -tL .tmp/github_repos_folders.txt -threads ${INTERLACE_THREADS} -c "gitleaks detect --source .tmp/github_repos/_target_ --no-banner --no-color -r .tmp/github/gh_secret_cleantarget_.json" 2>>"$LOGFILE" >/dev/null
 			[ -s ".tmp/company_repos_url.txt" ] && interlace -tL .tmp/company_repos_url.txt -threads ${INTERLACE_THREADS} -c "trufflehog git _target_ -j 2>&1 | jq -c > _output_/_cleantarget_" -o .tmp/github/ >>"$LOGFILE" 2>&1
 			if [ -d ".tmp/github/" ]; then
 				cat .tmp/github/* | jq -c | jq -r > osint/github_company_secrets.json 2>>"$LOGFILE"
@@ -198,7 +199,7 @@ function github_repos(){
 function metadata(){
 	if { [ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ] || [ "$DIFF" = true ]; } && [ "$METADATA" = true ] && [ "$OSINT" = true ] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Scanning metadata in public files"
-		{ metafinder -d "$domain" -l $METAFINDER_LIMIT -o osint -go -bi -ba; } >>"$LOGFILE" 2>&1 &
+		metafinder -d "$domain" -l $METAFINDER_LIMIT -o osint -go -bi -ba &>> "$LOGFILE"
 		mv "osint/${domain}/"*".txt" "osint/" 2>>"$LOGFILE"
 		rm -rf "osint/${domain}" 2>>"$LOGFILE"
 		end_func "Results are saved in $domain/osint/[software/authors/metadata_results].txt" ${FUNCNAME[0]}
@@ -225,7 +226,7 @@ function emails(){
 
 		
 		cd "$tools/Infoga" || { echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"; exit 1; }
-		python3 infoga.py --domain "$domain" --source all --report "$dir/.tmp/infoga.txt" 2>&1 | tee -a "$LOGFILE"
+		python3 infoga.py --domain "$domain" --source all --report "$dir/.tmp/infoga.txt" &>> "$LOGFILE"
 		cd "$dir" || { echo "Failed to cd to $dir in ${FUNCNAME[0]} @ line ${LINENO}"; exit 1; }
 		[ -s ".tmp/infoga.txt" ] && cat .tmp/infoga.txt | cut -d " " -f3 | grep -v "-" | anew -q osint/emails.txt
 
@@ -396,7 +397,7 @@ function sub_passive(){
 function sub_crt(){
 	if { [ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ] || [ "$DIFF" = true ]; } && [ "$SUBCRT" = true ]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Crtsh Subdomain Enumeration"
-		crt -s -json -l ${CTR_LIMIT} $domain 2>>"$LOGFILE" | jq -r '.[].subdomain' | sed -e "s/^\\*\\.//" | anew -q .tmp/crtsh_subs_tmp.txt 2>>"$LOGFILE" >/dev/null
+		crt -s -json -l ${CTR_LIMIT} $domain 2>>"$LOGFILE" | jq -r '.[].subdomain' 2>>"$LOGFILE" | sed -e "s/^\\*\\.//" | anew -q .tmp/crtsh_subs_tmp.txt 2>>"$LOGFILE" >/dev/null
 		[[ "$INSCOPE" = true ]] && check_inscope .tmp/crtsh_subs_tmp.txt 2>>"$LOGFILE" >/dev/null
 		NUMOFLINES=$(cat .tmp/crtsh_subs_tmp.txt 2>>"$LOGFILE" | sed 's/\*.//g' | anew .tmp/crtsh_subs.txt | sed '/^$/d' | wc -l)
 		end_subfunc "${NUMOFLINES} new subs (cert transparency)" ${FUNCNAME[0]}
@@ -1420,8 +1421,9 @@ function jschecks(){
 			if [ ! "$AXIOM" = true ]; then
 				[ -s "js/js_livelinks.txt" ] && cat js/js_livelinks.txt | Mantra -ua ${HEADER} -s | anew -q js/js_secrets.txt
 			else
-				[ -s "js/js_livelinks.txt" ] && axiom-scan js/js_livelinks.txt -m mantra -ua ${HEADER} -o js/js_secrets.txt $AXIOM_EXTRA_ARGS &>/dev/null
+				[ -s "js/js_livelinks.txt" ] && axiom-scan js/js_livelinks.txt -m mantra -ua ${HEADER} -s -o js/js_secrets.txt $AXIOM_EXTRA_ARGS &>/dev/null
 			fi
+			[ -s "js/js_secrets.txt" ] && sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2};?)?)?[mGK]//g" -i js/js_secrets.txt
 			printf "${yellow} Running : Building wordlist 5/5${reset}\n"
 			[ -s "js/js_livelinks.txt" ] && interlace -tL js/js_livelinks.txt -threads ${INTERLACE_THREADS}  -c "python3 $tools/getjswords.py '_target_' | anew -q webs/dict_words.txt" 2>>"$LOGFILE" >/dev/null
 			end_func "Results are saved in $domain/js folder" ${FUNCNAME[0]}
