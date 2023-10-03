@@ -63,10 +63,9 @@ function tools_installed(){
 	[ -f "$tools/cloud_enum/cloud_enum.py" ] || { printf "${bred} [*] cloud_enum			[NO]${reset}\n"; allinstalled=false;}
 	[ -f "$tools/ultimate-nmap-parser/ultimate-nmap-parser.sh" ] || { printf "${bred} [*] nmap-parse-output		[NO]${reset}\n"; allinstalled=false;}
 	[ -f "$tools/pydictor/pydictor.py" ] || { printf "${bred} [*] pydictor   		[NO]${reset}\n"; allinstalled=false;}
-	[ -f "$tools/urless/urless.py" ] || { printf "${bred} [*] urless			[NO]${reset}\n"; allinstalled=false;}
+	[ -f "$tools/urless/urless/urless.py" ] || { printf "${bred} [*] urless			[NO]${reset}\n"; allinstalled=false;}
 	[ -f "$tools/smuggler/smuggler.py" ] || { printf "${bred} [*] smuggler			[NO]${reset}\n"; allinstalled=false;}
 	[ -f "$tools/regulator/main.py" ] || { printf "${bred} [*] regulator			[NO]${reset}\n"; allinstalled=false;}
-#	[ -f "$tools/Infoga/infoga.py" ] || { printf "${bred} [*] infoga			[NO]${reset}\n"; allinstalled=false;}
 	which github-endpoints &>/dev/null || { printf "${bred} [*] github-endpoints		[NO]${reset}\n"; allinstalled=false;}
 	which github-subdomains &>/dev/null || { printf "${bred} [*] github-subdomains		[NO]${reset}\n"; allinstalled=false;}
 	which gitlab-subdomains &>/dev/null || { printf "${bred} [*] gitlab-subdomains		[NO]${reset}\n"; allinstalled=false;}
@@ -230,14 +229,6 @@ function emails(){
 		start_func ${FUNCNAME[0]} "Searching emails/users/passwords leaks"
 		emailfinder -d $domain 2>>"$LOGFILE" | anew -q .tmp/emailfinder.txt || { echo "emailfinder command failed"; exit 1; }
 		[ -s ".tmp/emailfinder.txt" ] && cat .tmp/emailfinder.txt | grep "@" | grep -iv "|_" | anew -q osint/emails.txt
-
-
-# INFOGA repo does not exists anymore		
-#		cd "$tools/Infoga" || { echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"; exit 1; }
-#		python3 infoga.py --domain "$domain" --source all --report "$dir/.tmp/infoga.txt" &>> "$LOGFILE"
-#		cd "$dir" || { echo "Failed to cd to $dir in ${FUNCNAME[0]} @ line ${LINENO}"; exit 1; }
-#		[ -s ".tmp/infoga.txt" ] && cat .tmp/infoga.txt | cut -d " " -f3 | grep -v "-" | anew -q osint/emails.txt
-
 
 		end_func "Results are saved in $domain/osint/emails.txt" ${FUNCNAME[0]}
 	else
@@ -2767,7 +2758,7 @@ function help(){
 	printf "   -a, --all         All - Perform all checks and active exploitations\n"
 	printf "   -w, --web         Web - Perform web checks from list of subdomains\n"
 	printf "   -n, --osint       OSINT - Check for public intel data\n"
-	printf "   -c                Launches specific function against target\n"
+	printf "   -c, --custom      Custom - Launches specific function against target, u need to know the function name first\n"
 	printf "   -h                Help - Show help section\n"
 	printf " \n"
 	printf " ${bblue}GENERAL OPTIONS${reset}\n"
@@ -2795,6 +2786,9 @@ function help(){
 	printf " \n"
 	printf " ${byellow}Perform full recon and store output to specified directory:${reset}\n"
 	printf " ./reconftw.sh -d example.com -r -o custom/path\n"
+	printf " \n"
+	printf " ${byellow}Run custom function:${reset}\n"
+	printf " ./reconftw.sh -d example.com -c nuclei_check \n"
 	printf " \n"
 	printf " ${byellow}Start the web server:${reset}\n"
 	printf " ./reconftw.sh --web-server start\n"
@@ -2934,7 +2928,7 @@ while true; do
             shift
             continue
             ;;
-		'-c')
+		'-c'|'--custom')
 			custom_function=$2
 			opt_mode='c'
             shift 2
