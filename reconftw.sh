@@ -53,13 +53,11 @@ function check_version() {
 }
 
 function tools_installed() {
-	spinny::start
 
 	printf "\n\n${bgreen}#######################################################################${reset}\n"
 	printf "${bblue} Checking installed tools ${reset}\n\n"
 
 	allinstalled=true
-
 
 	[ -n "$GOPATH" ] || {
 		printf "${bred} [*] GOPATH var			[NO]${reset}\n"
@@ -173,6 +171,10 @@ function tools_installed() {
 		printf "${bred} [*] dontgo403			[NO]${reset}\n"
 		allinstalled=false
 	}
+	[ -f "${tools}/SwaggerSpy/swaggerspy.py" ] || {
+		printf "${bred} [*] swaggerspy			[NO]${reset}\n"
+		allinstalled=false
+	}
 	command -v github-endpoints &>/dev/null || {
 		printf "${bred} [*] github-endpoints		[NO]${reset}\n"
 		allinstalled=false
@@ -195,10 +197,6 @@ function tools_installed() {
 	}
 	command -v dnsvalidator &>/dev/null || {
 		printf "${bred} [*] dnsvalidator		[NO]${reset}\n"
-		allinstalled=false
-	}
-	command -v gowitness &>/dev/null || {
-		printf "${bred} [*] gowitness			[NO]${reset}\n"
 		allinstalled=false
 	}
 	command -v amass &>/dev/null || {
@@ -373,8 +371,16 @@ function tools_installed() {
 		printf "${bred} [*] s3scanner			[NO]${reset}\n${reset}"
 		allinstalled=false
 	}
-  command -v mantra &>/dev/null || {
+	command -v mantra &>/dev/null || {
 		printf "${bred} [*] mantra			[NO]${reset}\n${reset}"
+		allinstalled=false
+	}
+	command -v nmapurls &>/dev/null || {
+		printf "${bred} [*] nmapurls			[NO]${reset}\n"
+		allinstalled=false
+	}
+	command -v porch-pirate &>/dev/null || {
+		printf "${bred} [*] porch-pirate			[NO]${reset}\n"
 		allinstalled=false
 	}
 	if [[ ${allinstalled} == true ]]; then
@@ -388,7 +394,6 @@ function tools_installed() {
 
 	printf "${bblue} Tools check finished\n"
 	printf "${bgreen}#######################################################################\n${reset}"
-	spinny::stop
 }
 
 ###############################################################################################################
@@ -396,7 +401,7 @@ function tools_installed() {
 ###############################################################################################################
 
 function google_dorks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $GOOGLE_DORKS == true ]] && [[ $OSINT == true ]]; then
 		python3 ${tools}/dorks_hunter/dorks_hunter.py -d "$domain" -o osint/dorks.txt || {
 			echo "dorks_hunter command failed"
@@ -410,11 +415,11 @@ function google_dorks() {
 			printf "${yellow} ${FUNCNAME[0]} are already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function github_dorks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $GITHUB_DORKS == true ]] && [[ $OSINT == true ]]; then
 		start_func "${FUNCNAME[0]}" "Github Dorks in process"
 		if [[ -s ${GITHUB_TOKENS} ]]; then
@@ -440,11 +445,11 @@ function github_dorks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function github_repos() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $GITHUB_REPOS == true ]] && [[ $OSINT == true ]]; then
 		start_func "${FUNCNAME[0]}" "Github Repos analysis in process"
 
@@ -473,11 +478,11 @@ function github_repos() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function metadata() {
-	spinny::start
+
 	if { [[ ! -f "${called_fn_dir}/.${FUNCNAME[0]}" ]] || [[ ${DIFF} == true ]]; } && [[ ${METADATA} == true ]] && [[ ${OSINT} == true ]] && ! [[ ${domain} =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Scanning metadata in public files"
 		metafinder -d "$domain" -l $METAFINDER_LIMIT -o osint -go -bi -ba &>>"$LOGFILE" || {
@@ -500,31 +505,28 @@ function metadata() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 function apileaks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $API_LEAKS == true ]] && [[ $OSINT == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Scanning for leaks in APIs public directories"
 
-		porch-pirate -s "$domain" --dump > osint/postman_leaks.txt 2>>"$LOGFILE" || {
-			echo "porch-pirate command failed"
-			exit 1
+		porch-pirate -s "$domain" --dump 2>>"$LOGFILE" >${dir}/osint/postman_leaks.txt || {
+			echo "porch-pirate command failed (probably by rate limit)"
 		}
-
 		pushd "${tools}/SwaggerSpy" >/dev/null || {
 			echo "Failed to pushd to ${tools}/SwaggerSpy in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
-		python3 swaggerspy.py $domain > ${dir}/osint/swagger_leaks.txt 2>>"$LOGFILE" || {
-			echo "swaggerspy command failed"
-			exit 1
-		}
+		python3 swaggerspy.py $domain 2>>"$LOGFILE" | grep -i "[*]\|URL" >${dir}/osint/swagger_leaks.txt
+
 		popd >/dev/null || {
 			echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
+
+		[ -s "osint/postman_leaks.txt" ] && trufflehog filesystem ${dir}/osint/postman_leaks.txt -j | jq -c | anew -q ${dir}/osint/postman_leaks_trufflehog.json
+		[ -s "osint/swagger_leaks.txt" ] && trufflehog filesystem ${dir}/osint/swagger_leaks.txt -j | jq -c | anew -q ${dir}/osint/swagger_leaks_trufflehog.json
 
 		end_func "Results are saved in $domain/osint/[software/authors/metadata_results].txt" ${FUNCNAME[0]}
 	else
@@ -540,11 +542,11 @@ function apileaks() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 function emails() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $EMAILS == true ]] && [[ $OSINT == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Searching emails/users/passwords leaks"
 		emailfinder -d $domain 2>>"$LOGFILE" | anew -q .tmp/emailfinder.txt || {
@@ -567,11 +569,11 @@ function emails() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 function domain_info() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $DOMAIN_INFO == true ]] && [[ $OSINT == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Searching domain info (whois, registrant name/email domains)"
 		whois -H $domain >osint/domain_info_general.txt || { echo "whois command failed"; }
@@ -595,11 +597,11 @@ function domain_info() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 function ip_info() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $IP_INFO == true ]] && [[ $OSINT == true ]] && [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Searching ip info"
 		if [[ -n $WHOISXML_API ]]; then
@@ -623,7 +625,7 @@ function ip_info() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 ###############################################################################################################
@@ -684,7 +686,7 @@ function subdomains_full() {
 }
 
 function sub_passive() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBPASSIVE == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Passive Subdomain Enumeration"
 
@@ -719,11 +721,11 @@ function sub_passive() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_crt() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBCRT == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Crtsh Subdomain Enumeration"
 		crt -s -json -l ${CTR_LIMIT} $domain 2>>"$LOGFILE" | jq -r '.[].subdomain' 2>>"$LOGFILE" | sed -e 's/^\*\.//' | anew -q .tmp/crtsh_subs_tmp.txt 2>>"$LOGFILE" >/dev/null
@@ -737,11 +739,11 @@ function sub_crt() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_active() {
-	spinny::start
+
 	if [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Active Subdomain Enumeration"
 		find .tmp -type f -iname "*_subs.txt" -exec cat {} + | anew -q .tmp/subs_no_resolved.txt
@@ -765,11 +767,11 @@ function sub_active() {
 	else
 		printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 	fi
-	spinny::stop
+
 }
 
 function sub_noerror() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBNOERROR == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Checking NOERROR DNS response"
 		if [[ $(echo "${RANDOM}thistotallynotexist${RANDOM}.$domain" | dnsx -r $resolvers -rcode noerror,nxdomain -retry 3 -silent | cut -d' ' -f2) == "[NXDOMAIN]" ]]; then
@@ -792,11 +794,11 @@ function sub_noerror() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_dns() {
-	spinny::start
+
 	if [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : DNS Subdomain Enumeration and PTR search"
 		if [[ $AXIOM != true ]]; then
@@ -821,11 +823,11 @@ function sub_dns() {
 	else
 		printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 	fi
-	spinny::stop
+
 }
 
 function sub_brute() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBBRUTE == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Bruteforce Subdomain Enumeration"
 		if [[ $AXIOM != true ]]; then
@@ -855,11 +857,11 @@ function sub_brute() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_scraping() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBSCRAPING == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Source code scraping subdomain search"
 		touch .tmp/scrap_subs.txt
@@ -913,11 +915,11 @@ function sub_scraping() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_analytics() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBANALYTICS == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Analytics Subdomain Enumeration"
 		if [[ -s ".tmp/probed_tmp_scrap.txt" ]]; then
@@ -943,11 +945,11 @@ function sub_analytics() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_permut() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBPERMUTE == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Permutations Subdomain Enumeration"
 		if [[ $DEEP == true ]] || [[ "$(cat subdomains/subdomains.txt | wc -l)" -le $DEEP_LIMIT ]]; then
@@ -1002,24 +1004,22 @@ function sub_permut() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_regex_permut() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBREGEXPERMUTE == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Permutations by regex analysis"
-		
+
 		pushd "${tools}/regulator" >/dev/null || {
 			echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
 
 		python3 main.py -t $domain -f ${dir}/subdomains/subdomains.txt -o ${dir}/.tmp/${domain}.brute
 
 		popd >/dev/null || {
 			echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
 
 		if [[ $AXIOM != true ]]; then
@@ -1045,11 +1045,11 @@ function sub_regex_permut() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_recursive_passive() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUB_RECURSIVE_PASSIVE == true ]] && [[ -s "subdomains/subdomains.txt" ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Subdomains recursive search passive"
 		# Passive recursive
@@ -1074,11 +1074,11 @@ function sub_recursive_passive() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sub_recursive_brute() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUB_RECURSIVE_BRUTE == true ]] && [[ -s "subdomains/subdomains.txt" ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Subdomains recursive search active"
 		if [[ $(cat subdomains/subdomains.txt | wc -l) -le $DEEP_LIMIT ]]; then
@@ -1142,20 +1142,20 @@ function sub_recursive_brute() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function subtakeover() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBTAKEOVER == true ]]; then
 		start_func ${FUNCNAME[0]} "Looking for possible subdomain and DNS takeover"
 		touch .tmp/tko.txt
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
 		if [[ $AXIOM != true ]]; then
 			nuclei -update 2>>"$LOGFILE" >/dev/null
-			cat subdomains/subdomains.txt .tmp/webs_all.txt 2>/dev/null | nuclei -silent -nh -tags takeover -severity info,low,medium,high,critical -retries 3 -rl $NUCLEI_RATELIMIT -t ${NUCLEI_TEMPLATES_PATH} -o .tmp/tko.txt
+			cat subdomains/subdomains.txt webs/webs_all.txt 2>/dev/null | nuclei -silent -nh -tags takeover -severity info,low,medium,high,critical -retries 3 -rl $NUCLEI_RATELIMIT -t ${NUCLEI_TEMPLATES_PATH} -o .tmp/tko.txt
 		else
-			cat subdomains/subdomains.txt .tmp/webs_all.txt 2>>"$LOGFILE" | sed '/^$/d' | anew -q .tmp/webs_subs.txt
+			cat subdomains/subdomains.txt webs/webs_all.txt 2>>"$LOGFILE" | sed '/^$/d' | anew -q .tmp/webs_subs.txt
 			[ -s ".tmp/webs_subs.txt" ] && axiom-scan .tmp/webs_subs.txt -m nuclei --nuclei-templates ${NUCLEI_TEMPLATES_PATH} -tags takeover -nh -severity info,low,medium,high,critical -retries 3 -rl $NUCLEI_RATELIMIT -t ${NUCLEI_TEMPLATES_PATH} -o .tmp/tko.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 		fi
 
@@ -1177,11 +1177,11 @@ function subtakeover() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function zonetransfer() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $ZONETRANSFER == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Zone transfer check"
 		for ns in $(dig +short ns "$domain"); do dig axfr "$domain" @"$ns" >>subdomains/zonetransfer.txt; done
@@ -1202,11 +1202,11 @@ function zonetransfer() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 function s3buckets() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $S3BUCKETS == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "AWS S3 buckets search"
 		# S3Scanner
@@ -1218,7 +1218,7 @@ function s3buckets() {
 		fi
 		# Cloudenum
 		keyword=${domain%%.*}
-		python3 ~/Tools/cloud_enum/cloud_enum.py -k $keyword -qs -l .tmp/output_cloud.txt 2>>"$LOGFILE" >/dev/null
+		python3 ~/Tools/cloud_enum/cloud_enum.py -k $keyword -l .tmp/output_cloud.txt 2>>"$LOGFILE" >/dev/null
 
 		NUMOFLINES1=$(cat .tmp/output_cloud.txt 2>>"$LOGFILE" | sed '/^#/d' | sed '/^$/d' | anew subdomains/cloud_assets.txt | wc -l)
 		if [[ $NUMOFLINES1 -gt 0 ]]; then
@@ -1228,6 +1228,8 @@ function s3buckets() {
 		if [[ $NUMOFLINES2 -gt 0 ]]; then
 			notification "${NUMOFLINES2} new S3 buckets found" info
 		fi
+
+		[ -s "subdomains/s3buckets.txt" ] && for i in $(cat subdomains/s3buckets.txt); do trufflehog s3 --bucket="$i" -j | jq -c | anew -q subdomains/s3buckets_trufflehog.txt; done
 
 		end_func "Results are saved in subdomains/s3buckets.txt and subdomains/cloud_assets.txt" ${FUNCNAME[0]}
 	else
@@ -1243,7 +1245,7 @@ function s3buckets() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 ###############################################################################################################
@@ -1251,7 +1253,8 @@ function s3buckets() {
 ###############################################################################################################
 
 function geo_info() {
-	if { [ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ] || [ "$DIFF" = true ]; }; then
+
+	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $GEO_INFO == true ]]; then
 		start_func ${FUNCNAME[0]} "Running: ipinfo via ipapi.co"
 		ips_file="${dir}/hosts/ips.txt"
 		if [ ! -f $ips_file ]; then
@@ -1298,8 +1301,13 @@ function geo_info() {
 		fi
 		end_func "Results are saved in hosts/geoip.txt and hosts/geoip.json" ${FUNCNAME[0]}
 	else
-		printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
+		if [[ $GEO_INFO == false ]]; then
+			printf "\n${yellow} ${FUNCNAME[0]} skipped in this mode or defined in reconftw.cfg ${reset}\n"
+		else
+			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
+		fi
 	fi
+
 }
 
 ###############################################################################################################
@@ -1307,7 +1315,7 @@ function geo_info() {
 ###############################################################################################################
 
 function webprobe_simple() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WEBPROBESIMPLE == true ]]; then
 		start_subfunc ${FUNCNAME[0]} "Running : Http probing $domain"
 		if [[ $AXIOM != true ]]; then
@@ -1320,7 +1328,7 @@ function webprobe_simple() {
 		[ -s "webs/web_full_info.txt" ] && cat webs/web_full_info.txt | jq -r 'try . |"\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' | grep "$domain" | anew -q webs/web_full_info_plain.txt
 		[ -s "$outOfScope_file" ] && deleteOutScoped $outOfScope_file .tmp/probed_tmp.txt
 		NUMOFLINES=$(cat .tmp/probed_tmp.txt 2>>"$LOGFILE" | anew webs/webs.txt | sed '/^$/d' | wc -l)
-		cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
+		cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
 		end_subfunc "${NUMOFLINES} new websites resolved" ${FUNCNAME[0]}
 		if [[ $PROXY == true ]] && [[ -n $proxy_url ]] && [[ $(cat webs/webs.txt | wc -l) -le $DEEP_LIMIT2 ]]; then
 			notification "Sending websites to proxy" info
@@ -1333,11 +1341,11 @@ function webprobe_simple() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function webprobe_full() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WEBPROBEFULL == true ]]; then
 		start_func ${FUNCNAME[0]} "Http probing non standard ports"
 		if [[ -s "subdomains/subdomains.txt" ]]; then
@@ -1351,7 +1359,7 @@ function webprobe_full() {
 				fi
 			fi
 		fi
-		[ -s ".tmp/web_full_info_uncommon.txt" ] && cat .tmp/web_full_info_uncommon.txt | jq -r 'try .url' 2>/dev/null | grep "$domain" | grep -E '^((http|https):\/\/)?([a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{1,}(\/.*)?$' | sed "s/*.//" | anew -q .tmp/probed_uncommon_ports_tmp.txt
+		[ -s ".tmp/web_full_info_uncommon.txt" ] && cat .tmp/web_full_info_uncommon.txt | jq -r 'try .url' 2>/dev/null | grep "$domain" | grep -E '^((http|https):\/\/)?([a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{1,}(\/.*)?' | sed "s/*.//" | anew -q .tmp/probed_uncommon_ports_tmp.txt
 		[ -s ".tmp/web_full_info_uncommon.txt" ] && cat .tmp/web_full_info_uncommon.txt | jq -r 'try . |"\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' | anew -q webs/web_full_info_uncommon_plain.txt
 		if [[ -s ".tmp/web_full_info_uncommon.txt" ]]; then
 			if [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
@@ -1363,7 +1371,7 @@ function webprobe_full() {
 		NUMOFLINES=$(cat .tmp/probed_uncommon_ports_tmp.txt 2>>"$LOGFILE" | anew webs/webs_uncommon_ports.txt | sed '/^$/d' | wc -l)
 		notification "Uncommon web ports: ${NUMOFLINES} new websites" good
 		[ -s "webs/webs_uncommon_ports.txt" ] && cat webs/webs_uncommon_ports.txt
-		cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
+		cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
 		end_func "Results are saved in $domain/webs/webs_uncommon_ports.txt" ${FUNCNAME[0]}
 		if [[ $PROXY == true ]] && [[ -n $proxy_url ]] && [[ $(cat webs/webs_uncommon_ports.txt | wc -l) -le $DEEP_LIMIT2 ]]; then
 			notification "Sending websites with uncommon ports to proxy" info
@@ -1376,22 +1384,19 @@ function webprobe_full() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function screenshot() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WEBSCREENSHOT == true ]]; then
 		start_func ${FUNCNAME[0]} "Web Screenshots"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-
-		num_lines=$(wc -l <.tmp/webs_all.txt)
-		dynamic_gowitness_timeout=$(expr $num_lines \* $GOWITNESS_TIMEOUT_PER_SITE)
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
 
 		if [[ $AXIOM != true ]]; then
-			[ -s ".tmp/webs_all.txt" ] && timeout -k 1m ${dynamic_gowitness_timeout}s gowitness file -f .tmp/webs_all.txt -t $GOWITNESS_THREADS $GOWITNESS_FLAGS 2>>"$LOGFILE"
+			[ -s "webs/webs_all.txt" ] && cat webs/webs_all.txt | nuclei -headless -id screenshot -V dir='screenshots' 2>>"$LOGFILE"
 		else
-			timeout -k 1m ${dynamic_gowitness_timeout}s axiom-scan .tmp/webs_all.txt -m gowitness -t $GOWITNESS_THREADS $GOWITNESS_FLAGS -o screenshots $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+			[ -s "webs/webs_all.txt" ] && axiom-scan webs/webs_all.txt -m nuclei-screenshots -o screenshots $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 		fi
 		end_func "Results are saved in $domain/screenshots folder" ${FUNCNAME[0]}
 	else
@@ -1401,18 +1406,18 @@ function screenshot() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function virtualhosts() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $VIRTUALHOSTS == true ]]; then
 		start_func ${FUNCNAME[0]} "Virtual Hosts dicovery"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ -s ".tmp/webs_all.txt" ]]; then
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ -s "webs/webs_all.txt" ]]; then
 			mkdir -p $dir/virtualhosts $dir/.tmp/virtualhosts
-			interlace -tL .tmp/webs_all.txt -threads ${INTERLACE_THREADS} -c "ffuf -ac -t ${FFUF_THREADS} -rate ${FFUF_RATELIMIT} -H \"${HEADER}\" -H \"Host: FUZZ._cleantarget_\" -w ${fuzz_wordlist} -maxtime ${FFUF_MAXTIME} -u  _target_ -of json -o _output_/_cleantarget_.json" -o $dir/.tmp/virtualhosts 2>>"$LOGFILE" >/dev/null
-			for sub in $(cat .tmp/webs_all.txt); do
+			interlace -tL webs/webs_all.txt -threads ${INTERLACE_THREADS} -c "ffuf -ac -t ${FFUF_THREADS} -rate ${FFUF_RATELIMIT} -H \"${HEADER}\" -H \"Host: FUZZ._cleantarget_\" -w ${fuzz_wordlist} -maxtime ${FFUF_MAXTIME} -u  _target_ -of json -o _output_/_cleantarget_.json" -o $dir/.tmp/virtualhosts 2>>"$LOGFILE" >/dev/null
+			for sub in $(cat webs/webs_all.txt); do
 				sub_out=$(echo $sub | sed -e 's|^[^/]*//||' -e 's|/.*$||')
 				[ -s "$dir/.tmp/virtualhosts/${sub_out}.json" ] && cat $dir/.tmp/virtualhosts/${sub_out}.json | jq -r 'try .results[] | "\(.status) \(.length) \(.url)"' | sort | anew -q $dir/virtualhosts/${sub_out}.txt
 			done
@@ -1428,7 +1433,7 @@ function virtualhosts() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 ###############################################################################################################
@@ -1436,14 +1441,13 @@ function virtualhosts() {
 ###############################################################################################################
 
 function favicon() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $FAVICON == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Favicon Ip Lookup"
 		pushd "${tools}/fav-up" >/dev/null || {
 			echo "Failed to cd to $dir in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
-		
+
 		python3 favUp.py -w "$domain" -sc -o favicontest.json 2>>"$LOGFILE" >/dev/null
 		if [[ -s "favicontest.json" ]]; then
 			cat favicontest.json | jq -r 'try .found_ips' 2>>"$LOGFILE" | grep -v "not-found" >favicontest.txt
@@ -1452,10 +1456,9 @@ function favicon() {
 			mv favicontest.txt $dir/hosts/favicontest.txt 2>>"$LOGFILE"
 			rm -f favicontest.json 2>>"$LOGFILE"
 		fi
-		
+
 		popd >/dev/null || {
 			echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
 		end_func "Results are saved in hosts/favicontest.txt" ${FUNCNAME[0]}
 	else
@@ -1471,11 +1474,11 @@ function favicon() {
 			fi
 		fi
 	fi
-	spinny::stop
+
 }
 
 function portscan() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $PORTSCANNER == true ]]; then
 		start_func ${FUNCNAME[0]} "Port scan"
 		if ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
@@ -1489,14 +1492,12 @@ function portscan() {
 		[ -s "hosts/ips.txt" ] && comm -23 <(cat hosts/ips.txt | sort -u) <(cat hosts/cdn_providers.txt | cut -d'[' -f1 | sed 's/[[:space:]]*$//' | sort -u) | grep -aEiv "^(127|10|169\.154|172\.1[6789]|172\.2[0-9]|172\.3[01]|192\.168)\." | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | sort -u | anew -q .tmp/ips_nocdn.txt
 		printf "${bblue}\n Resolved IP addresses (No CDN) ${reset}\n\n"
 		[ -s ".tmp/ips_nocdn.txt" ] && cat .tmp/ips_nocdn.txt | sort
-		geo_info
 		printf "${bblue}\n Scanning ports... ${reset}\n\n"
 		ips_file="${dir}/hosts/ips.txt"
 		if [ "$PORTSCAN_PASSIVE" = true ]; then
 			if [ ! -f $ips_file ]; then
 				echo "File $ips_file does not exist."
 			else
-				start_subfunc "Running : Shodan to check for open ports "
 				for cip in $(cat "$ips_file"); do
 					json_result=$(curl -s https://internetdb.shodan.io/${cip})
 					json_array+=("$json_result")
@@ -1509,23 +1510,30 @@ function portscan() {
 					fi
 				done
 				formatted_json+="]"
-				echo "$formatted_json" >"${dir}/hosts/shodan_results.json"
+				echo "$formatted_json" >"${dir}/hosts/portscan_shodan.txt"
 			fi
 		else
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
-		end_func "Results are saved in hosts/shodan_results.json" ${FUNCNAME[0]}
 		if [[ $PORTSCAN_PASSIVE == true ]] && [[ ! -f "hosts/portscan_passive.txt" ]] && [[ -s ".tmp/ips_nocdn.txt" ]]; then
 			smap -iL .tmp/ips_nocdn.txt >hosts/portscan_passive.txt
 		fi
 		if [[ $PORTSCAN_ACTIVE == true ]]; then
 			if [[ $AXIOM != true ]]; then
-				[ -s ".tmp/ips_nocdn.txt" ] && $SUDO nmap --top-ports 200 -sV -n --max-retries 2 -Pn --open --script vulners -iL .tmp/ips_nocdn.txt -oA hosts/portscan_active 2>>"$LOGFILE" >/dev/null
+				[ -s ".tmp/ips_nocdn.txt" ] && $SUDO nmap ${PORTSCAN_ACTIVE_OPTIONS} -iL .tmp/ips_nocdn.txt -oA hosts/portscan_active 2>>"$LOGFILE" >/dev/null
 			else
-				[ -s ".tmp/ips_nocdn.txt" ] && axiom-scan .tmp/ips_nocdn.txt -m nmapx --top-ports 200 -sV -n -Pn --open --max-retries 2 --script vulners -oA hosts/portscan_active $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+				[ -s ".tmp/ips_nocdn.txt" ] && axiom-scan .tmp/ips_nocdn.txt -m nmapx ${PORTSCAN_ACTIVE_OPTIONS} -oA hosts/portscan_active $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 			fi
 		fi
-		end_func "Results are saved in hosts/portscan_[passive|active].txt" ${FUNCNAME[0]}
+
+		[ -s "hosts/portscan_active.xml" ] && cat hosts/portscan_active.xml | nmapurls 2>>"$LOGFILE" | anew -q hosts/webs.txt
+
+		if [ -s "hosts/webs.txt" ]; then
+			NUMOFLINES=$(cat hosts/webs.txt | wc -l)
+			notification "Webs detected from port scan: ${NUMOFLINES} new websites" good
+			cat hosts/webs.txt
+		fi
+		end_func "Results are saved in hosts/portscan_[passive|active|shodan].txt" ${FUNCNAME[0]}
 	else
 		if [[ $PORTSCANNER == false ]]; then
 			printf "\n${yellow} ${FUNCNAME[0]} skipped in this mode or defined in reconftw.cfg ${reset}\n"
@@ -1533,11 +1541,11 @@ function portscan() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function cdnprovider() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $CDN_IP == true ]]; then
 		start_func ${FUNCNAME[0]} "CDN provider check"
 		[ -s "subdomains/subdomains_dnsregs.json" ] && cat subdomains/subdomains_dnsregs.json | jq -r 'try . | .a[]' | grep -aEiv "^(127|10|169\.154|172\.1[6789]|172\.2[0-9]|172\.3[01]|192\.168)\." | grep -oE "\b([0-9]{1,3}\.){3}[0-9]{1,3}\b" | sort -u >.tmp/ips_cdn.txt
@@ -1550,7 +1558,7 @@ function cdnprovider() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 ###############################################################################################################
@@ -1558,15 +1566,15 @@ function cdnprovider() {
 ###############################################################################################################
 
 function waf_checks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WAF_DETECTION == true ]]; then
 		start_func ${FUNCNAME[0]} "Website's WAF detection"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ -s ".tmp/webs_all.txt" ]]; then
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ -s "webs/webs_all.txt" ]]; then
 			if [[ $AXIOM != true ]]; then
-				wafw00f -i .tmp/webs_all.txt -o .tmp/wafs.txt 2>>"$LOGFILE" >/dev/null
+				wafw00f -i webs/webs_all.txt -o .tmp/wafs.txt 2>>"$LOGFILE" >/dev/null
 			else
-				axiom-scan .tmp/webs_all.txt -m wafw00f -o .tmp/wafs.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+				axiom-scan webs/webs_all.txt -m wafw00f -o .tmp/wafs.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 			fi
 			if [[ -s ".tmp/wafs.txt" ]]; then
 				cat .tmp/wafs.txt | sed -e 's/^[ \t]*//' -e 's/ \+ /\t/g' -e '/(None)/d' | tr -s "\t" ";" >webs/webs_wafs.txt
@@ -1586,17 +1594,17 @@ function waf_checks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function nuclei_check() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $NUCLEICHECK == true ]]; then
 		start_func ${FUNCNAME[0]} "Templates based web scanner"
 		nuclei -update 2>>"$LOGFILE" >/dev/null
 		mkdir -p nuclei_output
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		[ ! -s ".tmp/webs_subs.txt" ] && cat subdomains/subdomains.txt .tmp/webs_all.txt 2>>"$LOGFILE" | anew -q .tmp/webs_subs.txt
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		[ ! -s ".tmp/webs_subs.txt" ] && cat subdomains/subdomains.txt webs/webs_all.txt 2>>"$LOGFILE" | anew -q .tmp/webs_subs.txt
 		if [[ $AXIOM != true ]]; then # avoid globbing (expansion of *).
 			IFS=',' read -ra severity_array <<<"$NUCLEI_SEVERITY"
 			for crit in "${severity_array[@]}"; do
@@ -1623,19 +1631,19 @@ function nuclei_check() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function fuzz() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $FUZZ == true ]]; then
 		start_func ${FUNCNAME[0]} "Web directory fuzzing"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ -s ".tmp/webs_all.txt" ]]; then
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ -s "webs/webs_all.txt" ]]; then
 			mkdir -p $dir/fuzzing $dir/.tmp/fuzzing
 			if [[ $AXIOM != true ]]; then
-				interlace -tL .tmp/webs_all.txt -threads ${INTERLACE_THREADS} -c "ffuf ${FFUF_FLAGS} -t ${FFUF_THREADS} -rate ${FFUF_RATELIMIT} -H \"${HEADER}\" -w ${fuzz_wordlist} -maxtime ${FFUF_MAXTIME} -u _target_/FUZZ -o _output_/_cleantarget_.json" -o $dir/.tmp/fuzzing 2>>"$LOGFILE" >/dev/null
-				for sub in $(cat .tmp/webs_all.txt); do
+				interlace -tL webs/webs_all.txt -threads ${INTERLACE_THREADS} -c "ffuf ${FFUF_FLAGS} -t ${FFUF_THREADS} -rate ${FFUF_RATELIMIT} -H \"${HEADER}\" -w ${fuzz_wordlist} -maxtime ${FFUF_MAXTIME} -u _target_/FUZZ -o _output_/_cleantarget_.json" -o $dir/.tmp/fuzzing 2>>"$LOGFILE" >/dev/null
+				for sub in $(cat webs/webs_all.txt); do
 					sub_out=$(echo $sub | sed -e 's|^[^/]*//||' -e 's|/.*$||')
 					[ -s "$dir/.tmp/fuzzing/${sub_out}.json" ] && cat $dir/.tmp/fuzzing/${sub_out}.json | jq -r 'try .results[] | "\(.status) \(.length) \(.url)"' | sort -k1 | anew -q $dir/fuzzing/${sub_out}.txt
 				done
@@ -1644,8 +1652,8 @@ function fuzz() {
 				axiom-exec "mkdir -p /home/op/lists/seclists/Discovery/Web-Content/" &>/dev/null
 				axiom-exec "wget -q -O - ${fuzzing_remote_list} > /home/op/lists/fuzz_wordlist.txt" &>/dev/null
 				axiom-exec "wget -q -O - ${fuzzing_remote_list} > /home/op/lists/seclists/Discovery/Web-Content/big.txt" &>/dev/null
-				axiom-scan .tmp/webs_all.txt -m ffuf_base -H "${HEADER}" $FFUF_FLAGS -s -maxtime $FFUF_MAXTIME -o $dir/.tmp/ffuf-content.json $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
-				for sub in $(cat .tmp/webs_all.txt); do
+				axiom-scan webs/webs_all.txt -m ffuf_base -H "${HEADER}" $FFUF_FLAGS -s -maxtime $FFUF_MAXTIME -o $dir/.tmp/ffuf-content.json $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+				for sub in $(cat webs/webs_all.txt); do
 					sub_out=$(echo $sub | sed -e 's|^[^/]*//||' -e 's|/.*$||')
 					[ -s "$dir/.tmp/ffuf-content.json" ] && cat .tmp/ffuf-content.json | jq -r 'try .results[] | "\(.status) \(.length) \(.url)"' | grep $sub | sort -k1 | anew -q fuzzing/${sub_out}.txt
 				done
@@ -1662,17 +1670,17 @@ function fuzz() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function cms_scanner() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $CMS_SCANNER == true ]]; then
 		start_func ${FUNCNAME[0]} "CMS Scanner"
 		mkdir -p $dir/cms && rm -rf $dir/cms/*
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ -s ".tmp/webs_all.txt" ]]; then
-			tr '\n' ',' <.tmp/webs_all.txt >.tmp/cms.txt 2>>"$LOGFILE"
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ -s "webs/webs_all.txt" ]]; then
+			tr '\n' ',' <webs/webs_all.txt >.tmp/cms.txt 2>>"$LOGFILE"
 			timeout -k 1m ${CMSSCAN_TIMEOUT}s python3 ${tools}/CMSeeK/cmseek.py -l .tmp/cms.txt --batch -r &>>"$LOGFILE"
 			exit_status=$?
 			if [[ ${exit_status} -eq 125 ]]; then
@@ -1684,7 +1692,7 @@ function cms_scanner() {
 				end_func "ERROR cmseek.py - investigate manually for $dir" ${FUNCNAME[0]}
 				return
 			fi # otherwise Assume we have a successfully exited cmseek
-			for sub in $(cat .tmp/webs_all.txt); do
+			for sub in $(cat webs/webs_all.txt); do
 				sub_out=$(echo $sub | sed -e 's|^[^/]*//||' -e 's|/.*$||')
 				cms_id=$(cat ${tools}/CMSeeK/Result/${sub_out}/cms.json 2>/dev/null | jq -r 'try .cms_id')
 				if [[ -z $cms_id ]]; then
@@ -1704,59 +1712,59 @@ function cms_scanner() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function urlchecks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $URL_CHECK == true ]]; then
 		start_func ${FUNCNAME[0]} "URL Extraction"
 		mkdir -p js
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ -s ".tmp/webs_all.txt" ]]; then
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ -s "webs/webs_all.txt" ]]; then
 			if [[ $AXIOM != true ]]; then
 				if [[ $URL_CHECK_PASSIVE == true ]]; then
 					if [[ $DEEP == true ]]; then
-						cat .tmp/webs_all.txt | unfurl -u domains >.tmp/waymore_input.txt
+						cat webs/webs_all.txt | unfurl -u domains >.tmp/waymore_input.txt
 						python3 ${tools}/waymore/waymore.py -i .tmp/waymore_input.txt -mode U -f -oU .tmp/url_extract_tmp.txt 2>>"$LOGFILE" >/dev/null
 					else
-						cat .tmp/webs_all.txt | gau --threads $GAU_THREADS | anew -q .tmp/url_extract_tmp.txt
+						cat webs/webs_all.txt | gau --threads $GAU_THREADS | anew -q .tmp/url_extract_tmp.txt
 					fi
 					if [[ -s ${GITHUB_TOKENS} ]]; then
 						github-endpoints -q -k -d $domain -t ${GITHUB_TOKENS} -o .tmp/github-endpoints.txt 2>>"$LOGFILE" >/dev/null
 						[ -s ".tmp/github-endpoints.txt" ] && cat .tmp/github-endpoints.txt | anew -q .tmp/url_extract_tmp.txt
 					fi
 				fi
-				diff_webs=$(diff <(sort -u .tmp/probed_tmp.txt 2>>"$LOGFILE") <(sort -u .tmp/webs_all.txt 2>>"$LOGFILE") | wc -l)
+				diff_webs=$(diff <(sort -u .tmp/probed_tmp.txt 2>>"$LOGFILE") <(sort -u webs/webs_all.txt 2>>"$LOGFILE") | wc -l)
 				if [[ $diff_webs != "0" ]] || [[ ! -s ".tmp/katana.txt" ]]; then
 					if [[ $URL_CHECK_ACTIVE == true ]]; then
 						if [[ $DEEP == true ]]; then
-							katana -silent -list .tmp/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 3 -fs rdn -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
+							katana -silent -list webs/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 3 -fs rdn -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
 						else
-							katana -silent -list .tmp/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 2 -fs rdn -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
+							katana -silent -list webs/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 2 -fs rdn -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
 						fi
 					fi
 				fi
 			else
 				if [[ $URL_CHECK_PASSIVE == true ]]; then
 					if [[ $DEEP == true ]]; then
-						cat .tmp/webs_all.txt | unfurl -u domains >.tmp/waymore_input.txt
+						cat webs/webs_all.txt | unfurl -u domains >.tmp/waymore_input.txt
 						axiom-scan .tmp/waymore_input.txt -m waymore -o .tmp/url_extract_tmp.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 					else
-						axiom-scan .tmp/webs_all.txt -m gau -o .tmp/url_extract_tmp.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+						axiom-scan webs/webs_all.txt -m gau -o .tmp/url_extract_tmp.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 					fi
 					if [[ -s ${GITHUB_TOKENS} ]]; then
 						github-endpoints -q -k -d $domain -t ${GITHUB_TOKENS} -o .tmp/github-endpoints.txt 2>>"$LOGFILE" >/dev/null
 						[ -s ".tmp/github-endpoints.txt" ] && cat .tmp/github-endpoints.txt | anew -q .tmp/url_extract_tmp.txt
 					fi
 				fi
-				diff_webs=$(diff <(sort -u .tmp/probed_tmp.txt) <(sort -u .tmp/webs_all.txt) | wc -l)
+				diff_webs=$(diff <(sort -u .tmp/probed_tmp.txt) <(sort -u webs/webs_all.txt) | wc -l)
 				if [[ $diff_webs != "0" ]] || [[ ! -s ".tmp/katana.txt" ]]; then
 					if [[ $URL_CHECK_ACTIVE == true ]]; then
 						if [[ $DEEP == true ]]; then
-							axiom-scan .tmp/webs_all.txt -m katana -jc -kf all -d 3 -fs rdn -fs rdn -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+							axiom-scan webs/webs_all.txt -m katana -jc -kf all -d 3 -fs rdn -fs rdn -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 						else
-							axiom-scan .tmp/webs_all.txt -m katana -jc -kf all -d 2 -fs rdn -fs rdn -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+							axiom-scan webs/webs_all.txt -m katana -jc -kf all -d 2 -fs rdn -fs rdn -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 						fi
 					fi
 				fi
@@ -1784,11 +1792,11 @@ function urlchecks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function url_gf() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $URL_GF == true ]]; then
 		start_func ${FUNCNAME[0]} "Vulnerable Pattern Search"
 		mkdir -p gf
@@ -1812,11 +1820,11 @@ function url_gf() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function url_ext() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $URL_EXT == true ]]; then
 		if [[ -s ".tmp/url_extract_tmp.txt" ]]; then
 			start_func ${FUNCNAME[0]} "Urls by extension"
@@ -1838,11 +1846,11 @@ function url_ext() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function jschecks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $JSCHECKS == true ]]; then
 		start_func ${FUNCNAME[0]} "Javascript Scan"
 		if [[ -s ".tmp/url_extract_js.txt" ]]; then
@@ -1875,6 +1883,7 @@ function jschecks() {
 				[ -s "js/js_livelinks.txt" ] && cat js/js_livelinks.txt | mantra -ua ${HEADER} -s | anew -q js/js_secrets.txt
 			else
 				[ -s "js/js_livelinks.txt" ] && axiom-scan js/js_livelinks.txt -m mantra -ua \"${HEADER}\" -s -o js/js_secrets.txt $AXIOM_EXTRA_ARGS &>/dev/null
+				[ -s "js/js_secrets.txt" ] && trufflehog filesystem js/js_secrets.txt -j | jq -c | anew -q js/js_secrets_trufflehog.txt
 			fi
 			[ -s "js/js_secrets.txt" ] && sed -r "s/\x1B\[([0-9]{1,3}(;[0-9]{1,2};?)?)?[mGK]//g" -i js/js_secrets.txt
 			printf "${yellow} Running : Building wordlist 5/5${reset}\n"
@@ -1890,11 +1899,11 @@ function jschecks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function wordlist_gen() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WORDLIST == true ]]; then
 		start_func ${FUNCNAME[0]} "Wordlist generation"
 		if [[ -s ".tmp/url_extract_tmp.txt" ]]; then
@@ -1916,16 +1925,16 @@ function wordlist_gen() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function wordlist_gen_roboxtractor() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $ROBOTSWORDLIST == true ]]; then
 		start_func ${FUNCNAME[0]} "Robots wordlist generation"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ -s ".tmp/webs_all.txt" ]]; then
-			cat .tmp/webs_all.txt | roboxtractor -m 1 -wb 2>/dev/null | anew -q webs/robots_wordlist.txt
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ -s "webs/webs_all.txt" ]]; then
+			cat webs/webs_all.txt | roboxtractor -m 1 -wb 2>/dev/null | anew -q webs/robots_wordlist.txt
 		fi
 		end_func "Results are saved in $domain/webs/robots_wordlist.txt" ${FUNCNAME[0]}
 	else
@@ -1935,11 +1944,11 @@ function wordlist_gen_roboxtractor() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function password_dict() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $PASSWORD_DICT == true ]]; then
 		start_func ${FUNCNAME[0]} "Password dictionary generation"
 		word=${domain%%.*}
@@ -1952,7 +1961,7 @@ function password_dict() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 ###############################################################################################################
@@ -1960,25 +1969,25 @@ function password_dict() {
 ###############################################################################################################
 
 function brokenLinks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $BROKENLINKS == true ]]; then
 		start_func ${FUNCNAME[0]} "Broken links checks"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
 		if [[ $AXIOM != true ]]; then
 			if [[ ! -s ".tmp/katana.txt" ]]; then
 				if [[ $DEEP == true ]]; then
-					[ -s ".tmp/webs_all.txt" ] && katana -silent -list .tmp/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 3 -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
+					[ -s "webs/webs_all.txt" ] && katana -silent -list webs/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 3 -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
 				else
-					[ -s ".tmp/webs_all.txt" ] && katana -silent -list .tmp/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 2 -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
+					[ -s "webs/webs_all.txt" ] && katana -silent -list webs/webs_all.txt -jc -kf all -c $KATANA_THREADS -d 2 -o .tmp/katana.txt 2>>"$LOGFILE" >/dev/null
 				fi
 			fi
 			[ -s ".tmp/katana.txt" ] && sed -i '/^.\{2048\}./d' .tmp/katana.txt
 		else
 			if [[ ! -s ".tmp/katana.txt" ]]; then
 				if [[ $DEEP == true ]]; then
-					[ -s ".tmp/webs_all.txt" ] && axiom-scan .tmp/webs_all.txt -m katana -jc -kf all -d 3 -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+					[ -s "webs/webs_all.txt" ] && axiom-scan webs/webs_all.txt -m katana -jc -kf all -d 3 -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 				else
-					[ -s ".tmp/webs_all.txt" ] && axiom-scan .tmp/webs_all.txt -m katana -jc -kf all -d 2 -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
+					[ -s "webs/webs_all.txt" ] && axiom-scan webs/webs_all.txt -m katana -jc -kf all -d 2 -o .tmp/katana.txt $AXIOM_EXTRA_ARGS 2>>"$LOGFILE" >/dev/null
 				fi
 				[ -s ".tmp/katana.txt" ] && sed -i '/^.\{2048\}./d' .tmp/katana.txt
 			fi
@@ -1994,11 +2003,11 @@ function brokenLinks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function xss() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $XSS == true ]] && [[ -s "gf/xss.txt" ]]; then
 		start_func ${FUNCNAME[0]} "XSS Analysis"
 		[ -s "gf/xss.txt" ] && cat gf/xss.txt | qsreplace FUZZ | sed '/FUZZ/!d' | Gxss -c 100 -p Xss | qsreplace FUZZ | sed '/FUZZ/!d' | anew -q .tmp/xss_reflected.txt
@@ -2053,15 +2062,15 @@ function xss() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function cors() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $CORS == true ]]; then
 		start_func ${FUNCNAME[0]} "CORS Scan"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		[ -s ".tmp/webs_all.txt" ] && python3 ${tools}/Corsy/corsy.py -i .tmp/webs_all.txt -o vulns/cors.txt 2>>"$LOGFILE" >/dev/null
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		[ -s "webs/webs_all.txt" ] && python3 ${tools}/Corsy/corsy.py -i webs/webs_all.txt -o vulns/cors.txt 2>>"$LOGFILE" >/dev/null
 		end_func "Results are saved in vulns/cors.txt" ${FUNCNAME[0]}
 	else
 		if [[ $CORS == false ]]; then
@@ -2070,11 +2079,11 @@ function cors() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function open_redirect() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $OPEN_REDIRECT == true ]] && [[ -s "gf/redirect.txt" ]]; then
 		start_func ${FUNCNAME[0]} "Open redirects checks"
 		if [[ $DEEP == true ]] || [[ $(cat gf/redirect.txt | wc -l) -le $DEEP_LIMIT ]]; then
@@ -2095,11 +2104,11 @@ function open_redirect() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function ssrf_checks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SSRF_CHECKS == true ]] && [[ -s "gf/ssrf.txt" ]]; then
 		start_func ${FUNCNAME[0]} "SSRF checks"
 		if [[ -z $COLLAB_SERVER ]]; then
@@ -2135,16 +2144,16 @@ function ssrf_checks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function crlf_checks() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $CRLF_CHECKS == true ]]; then
 		start_func ${FUNCNAME[0]} "CRLF checks"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ $DEEP == true ]] || [[ $(cat .tmp/webs_all.txt | wc -l) -le $DEEP_LIMIT ]]; then
-			crlfuzz -l .tmp/webs_all.txt -o vulns/crlf.txt 2>>"$LOGFILE" >/dev/null
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ $DEEP == true ]] || [[ $(cat webs/webs_all.txt | wc -l) -le $DEEP_LIMIT ]]; then
+			crlfuzz -l webs/webs_all.txt -o vulns/crlf.txt 2>>"$LOGFILE" >/dev/null
 			end_func "Results are saved in vulns/crlf.txt" ${FUNCNAME[0]}
 		else
 			end_func "Skipping CRLF: Too many URLs to test, try with --deep flag" ${FUNCNAME[0]}
@@ -2156,11 +2165,11 @@ function crlf_checks() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function lfi() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $LFI == true ]] && [[ -s "gf/lfi.txt" ]]; then
 		start_func ${FUNCNAME[0]} "LFI checks"
 		if [[ -s "gf/lfi.txt" ]]; then
@@ -2181,11 +2190,11 @@ function lfi() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function ssti() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SSTI == true ]] && [[ -s "gf/ssti.txt" ]]; then
 		start_func ${FUNCNAME[0]} "SSTI checks"
 		if [[ -s "gf/ssti.txt" ]]; then
@@ -2207,11 +2216,11 @@ function ssti() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function sqli() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SQLI == true ]] && [[ -s "gf/sqli.txt" ]]; then
 		start_func ${FUNCNAME[0]} "SQLi checks"
 
@@ -2236,10 +2245,11 @@ function sqli() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function test_ssl() {
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $TEST_SSL == true ]]; then
 		start_func ${FUNCNAME[0]} "SSL Test"
 		${tools}/testssl.sh/testssl.sh --quiet --color 0 -U -iL hosts/ips.txt 2>>"$LOGFILE" >vulns/testssl.txt
@@ -2251,22 +2261,21 @@ function test_ssl() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
+
 }
 
 function spraying() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SPRAY == true ]]; then
 		start_func ${FUNCNAME[0]} "Password spraying"
 
 		pushd "${tools}/brutespray" >/dev/null || {
 			echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
 
 		python3 brutespray.py --file $dir/hosts/portscan_active.gnmap --threads $BRUTESPRAY_THREADS --hosts $BRUTESPRAY_CONCURRENCE -o $dir/vulns/brutespray 2>>"$LOGFILE" >/dev/null
 		popd >/dev/null || {
 			echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-			exit 1
 		}
 		end_func "Results are saved in vulns/brutespray folder" ${FUNCNAME[0]}
 	else
@@ -2276,11 +2285,11 @@ function spraying() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function command_injection() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $COMM_INJ == true ]] && [[ -s "gf/rce.txt" ]]; then
 		start_func ${FUNCNAME[0]} "Command Injection checks"
 		[ -s "gf/rce.txt" ] && cat gf/rce.txt | qsreplace FUZZ | sed '/FUZZ/!d' | anew -q .tmp/tmp_rce.txt
@@ -2299,11 +2308,11 @@ function command_injection() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function 4xxbypass() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $BYPASSER4XX == true ]]; then
 		if [[ $(cat fuzzing/fuzzing_full.txt 2>/dev/null | grep -E '^4' | grep -Ev '^404' | cut -d ' ' -f3 | wc -l) -le 1000 ]] || [[ $DEEP == true ]]; then
 			start_func "403 bypass"
@@ -2311,13 +2320,11 @@ function 4xxbypass() {
 
 			pushd "${tools}/dontgo403" >/dev/null || {
 				echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"
-				exit 1
 			}
 
 			cat $dir/.tmp/403test.txt | ./dontgo403 >$dir/.tmp/4xxbypass.txt
 			popd >/dev/null || {
 				echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-				exit 1
 			}
 			[ -s ".tmp/4xxbypass.txt" ] && cat .tmp/4xxbypass.txt | anew -q vulns/4xxbypass.txt
 			end_func "Results are saved in vulns/4xxbypass.txt" ${FUNCNAME[0]}
@@ -2331,11 +2338,11 @@ function 4xxbypass() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function prototype_pollution() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $PROTO_POLLUTION == true ]]; then
 		start_func ${FUNCNAME[0]} "Prototype Pollution checks"
 		if [[ $DEEP == true ]] || [[ $(cat webs/url_extract.txt | wc -l) -le $DEEP_LIMIT ]]; then
@@ -2352,26 +2359,24 @@ function prototype_pollution() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function smuggling() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SMUGGLING == true ]]; then
 		start_func ${FUNCNAME[0]} "HTTP Request Smuggling checks"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ $DEEP == true ]] || [[ $(cat .tmp/webs_all.txt | wc -l) -le $DEEP_LIMIT ]]; then
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ $DEEP == true ]] || [[ $(cat webs/webs_all.txt | wc -l) -le $DEEP_LIMIT ]]; then
 			pushd "${tools}/smuggler" >/dev/null || {
 				echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"
-				exit 1
 			}
-			cat $dir/.tmp/webs_all.txt | python3 smuggler.py -q --no-color 2>/dev/null | anew -q $dir/.tmp/smuggling.txt
+			cat $dir/webs/webs_all.txt | python3 smuggler.py -q --no-color 2>/dev/null | anew -q $dir/.tmp/smuggling.txt
 			mkdir -p $dir/vulns/smuggling/
 			find payloads -type f ! -name "README*" -exec mv {} $dir/vulns/smuggling/ \;
 			popd >/dev/null || {
 				echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-				exit 1
-			}			
+			}
 			[ -s ".tmp/smuggling.txt" ] && cat .tmp/smuggling.txt | anew -q vulns/smuggling_log.txt
 			end_func "Results are saved in vulns/smuggling_log.txt and findings in vulns/smuggling/" ${FUNCNAME[0]}
 		else
@@ -2384,24 +2389,22 @@ function smuggling() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function webcache() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WEBCACHE == true ]]; then
 		start_func ${FUNCNAME[0]} "Web Cache Poisoning checks"
-		[ ! -s ".tmp/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q .tmp/webs_all.txt
-		if [[ $DEEP == true ]] || [[ $(cat .tmp/webs_all.txt | wc -l) -le $DEEP_LIMIT ]]; then
+		[ ! -s "webs/webs_all.txt" ] && cat webs/webs.txt webs/webs_uncommon_ports.txt 2>/dev/null | anew -q webs/webs_all.txt
+		if [[ $DEEP == true ]] || [[ $(cat webs/webs_all.txt | wc -l) -le $DEEP_LIMIT ]]; then
 			pushd "${tools}/Web-Cache-Vulnerability-Scanner" >/dev/null || {
 				echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"
-				exit 1
 			}
 
-			Web-Cache-Vulnerability-Scanner -u file:$dir/.tmp/webs_all.txt -v 0 2>/dev/null | anew -q $dir/.tmp/webcache.txt
+			Web-Cache-Vulnerability-Scanner -u file:$dir/webs/webs_all.txt -v 0 2>/dev/null | anew -q $dir/.tmp/webcache.txt
 			popd >/dev/null || {
 				echo "Failed to popd in ${FUNCNAME[0]} @ line ${LINENO}"
-				exit 1
 			}
 			[ -s ".tmp/webcache.txt" ] && cat .tmp/webcache.txt | anew -q vulns/webcache.txt
 			end_func "Results are saved in vulns/webcache.txt" ${FUNCNAME[0]}
@@ -2415,11 +2418,11 @@ function webcache() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 function fuzzparams() {
-	spinny::start
+
 	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $FUZZPARAMS == true ]]; then
 		start_func ${FUNCNAME[0]} "Fuzzing params values checks"
 		if [[ $DEEP == true ]] || [[ $(cat webs/url_extract.txt | wc -l) -le $DEEP_LIMIT2 ]]; then
@@ -2443,7 +2446,7 @@ function fuzzparams() {
 			printf "${yellow} ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
 		fi
 	fi
-	spinny::stop
+
 }
 
 ###############################################################################################################
@@ -2626,7 +2629,7 @@ function check_inscope() {
 }
 
 function resolvers_update() {
-	spinny::start
+
 	if [[ $generate_resolvers == true ]]; then
 		if [[ $AXIOM != true ]]; then
 			if [[ ! -s $resolvers ]] || [[ $(find "$resolvers" -mtime +1 -print) ]]; then
@@ -2658,7 +2661,7 @@ function resolvers_update() {
 			notification "Resolvers updated\n" good
 		fi
 	fi
-	spinny::stop
+
 }
 
 function resolvers_update_quick_local() {
@@ -2861,6 +2864,7 @@ function end() {
 	printf "${bgreen}#######################################################################${reset}\n"
 	#Seperator for more clear messges in telegram_Bot
 	echo "******  Stay safe 🦠 and secure 🔐  ******" | $NOTIFY
+
 }
 
 ###############################################################################################################
@@ -2894,6 +2898,7 @@ function passive() {
 	remove_big_files
 	favicon
 	cdnprovider
+	geo_info
 	PORTSCAN_ACTIVE=false
 	portscan
 
@@ -3042,6 +3047,7 @@ function recon() {
 	screenshot
 	#	virtualhosts
 	cdnprovider
+	geo_info
 	portscan
 	waf_checks
 	nuclei_check
@@ -3163,6 +3169,7 @@ function multi_recon() {
 		screenshot
 		#		virtualhosts
 		cdnprovider
+		geo_info
 		portscan
 		currently=$(date +"%H:%M:%S")
 		loopend=$(date +%s)
@@ -3366,8 +3373,6 @@ function help() {
 ###############################################################################################################
 ########################################### START SCRIPT  #####################################################
 ###############################################################################################################
-
-source assets/spinny/spinny.sh
 
 # macOS PATH initialization, thanks @0xtavian <3
 if [[ $OSTYPE == "darwin"* ]]; then
