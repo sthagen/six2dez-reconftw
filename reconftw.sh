@@ -594,7 +594,7 @@ function emails() {
 			echo "Failed to cd directory in ${FUNCNAME[0]} @ line ${LINENO}"
 		}
 
-		python3 LeakSearch.py -k $domain -o ${dir}/.tmp/passwords.txt 2>>"$LOGFILE" || {
+		python3 LeakSearch.py -k $domain -o ${dir}/.tmp/passwords.txt 1>>"$LOGFILE" || {
 			echo "LeakSearch command failed"
 		}
 
@@ -653,7 +653,7 @@ function domain_info() {
 function third_party_misconfigs() {
 
 	mkdir -p 3rdparties
-	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $3RD_PARTIES == true ]] && [[ $OSINT == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
+	if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $THIRD_PARTIES == true ]] && [[ $OSINT == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 		start_func ${FUNCNAME[0]} "Searching for third parties misconfigurations"
 		company_name=$(echo $domain | unfurl format %r)
 
@@ -669,12 +669,12 @@ function third_party_misconfigs() {
 		end_func "Results are saved in $domain/3rdparties" ${FUNCNAME[0]}
 
 	else
-		if [[ $3RD_PARTIES == false ]] || [[ $OSINT == false ]]; then
+		if [[ $THIRD_PARTIES == false ]] || [[ $OSINT == false ]]; then
 			printf "\n${yellow}[$(date +'%Y-%m-%d %H:%M:%S')] ${FUNCNAME[0]} skipped in this mode or defined in reconftw.cfg ${reset}\n"
 		elif [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9] ]]; then
 			return
 		else
-			if [[ $3RD_PARTIES == false ]] || [[ $OSINT == false ]]; then
+			if [[ $THIRD_PARTIES == false ]] || [[ $OSINT == false ]]; then
 				printf "\n${yellow}[$(date +'%Y-%m-%d %H:%M:%S')] ${FUNCNAME[0]} skipped in this mode or defined in reconftw.cfg ${reset}\n"
 			else
 				printf "${yellow}[$(date +'%Y-%m-%d %H:%M:%S')] ${FUNCNAME[0]} is already processed, to force executing ${FUNCNAME[0]} delete\n    $called_fn_dir/.${FUNCNAME[0]} ${reset}\n\n"
@@ -2742,13 +2742,13 @@ function transfer {
 		fi
 		if [[ -d $file ]]; then
 			file_name="$file_name.zip"
-			(cd "$file" && zip -r -q - .) | curl --progress-bar --upload-file "-" "https://transfer.sh/$file_name" | tee /dev/null
+			(cd "$file" && zip -r -q - .) | curl --progress-bar --upload-file "-" "https://oshi.at" | tee /dev/null
 		else
-			cat "$file" | curl --progress-bar --upload-file "-" "https://transfer.sh/$file_name" | tee /dev/null
+			cat "$file" | curl --progress-bar --upload-file "-" "https://oshi.at" | tee /dev/null
 		fi
 	else
 		file_name=$1
-		curl --progress-bar --upload-file "-" "https://transfer.sh/$file_name" | tee /dev/null
+		curl --progress-bar --upload-file "-" "https://oshi.at" | tee /dev/null
 	fi
 }
 
@@ -2760,7 +2760,7 @@ function sendToNotify {
 			NOTIFY_CONFIG=~/.config/notify/provider-config.yaml
 		fi
 		if [[ -n "$(find "${1}" -prune -size +8000000c)" ]]; then
-			printf '%s is larger than 8MB, sending over transfer.sh\n' "${1}"
+			printf '%s is larger than 8MB, sending over oshi.at\n' "${1}"
 			transfer "${1}" | notify -silent
 			return 0
 		fi
