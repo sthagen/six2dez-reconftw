@@ -152,7 +152,6 @@ function tools_installed() {
 		["regulator_python"]="${tools}/regulator/venv/bin/python3"
 		["nomore403"]="${tools}/nomore403/nomore403"
 		["ffufPostprocessing"]="${tools}/ffufPostprocessing/ffufPostprocessing"
-		["misconfig-mapper"]="${tools}/misconfig-mapper/misconfig-mapper"
 		["spoofy"]="${tools}/Spoofy/spoofy.py"
 		["spoofy_python"]="${tools}/Spoofy/venv/bin/python3"
 		["swaggerspy"]="${tools}/SwaggerSpy/swaggerspy.py"
@@ -590,22 +589,8 @@ function third_party_misconfigs() {
 		# Extract company name from domain
 		company_name=$(unfurl format %r <<<"$domain")
 
-		# Change directory to misconfig-mapper tool
-		if ! pushd "${tools}/misconfig-mapper" >/dev/null; then
-			printf "%b[!] Failed to change directory to %s in %s at line %s.%b\n" \
-				"$bred" "${tools}/misconfig-mapper" "${FUNCNAME[0]}" "$LINENO" "$reset"
-			return 1
-		fi
-
 		# Run misconfig-mapper and handle errors
-		./misconfig-mapper -target "$company_name" -service "*" 2>&1 | grep -v "\-\]" | grep -v "Failed" >"${dir}/osint/3rdparts_misconfigurations.txt"
-
-		# Return to the previous directory
-		if ! popd >/dev/null; then
-			printf "%b[!] Failed to return to previous directory in %s at line %s.%b\n" \
-				"$bred" "${FUNCNAME[0]}" "$LINENO" "$reset"
-			return 1
-		fi
+		misconfig-mapper -target "$company_name" -service "*" 2>&1 | grep -v "\-\]" | grep -v "Failed" >"${dir}/osint/3rdparts_misconfigurations.txt"
 
 		end_func "Results are saved in $domain/osint/3rdparts_misconfigurations.txt" "${FUNCNAME[0]}"
 
@@ -3029,7 +3014,7 @@ function portscan() {
 		# Check for CDN providers
 		if [[ ! -s "hosts/cdn_providers.txt" ]]; then
 			if [[ -s "hosts/ips.txt" ]]; then
-				cdncheck -silent -resp -cdn -waf -nc <hosts/ips.txt 2>/dev/null >hosts/cdn_providers.txt
+				cat hosts/ips.txt | cdncheck -silent -resp -cdn -waf -nc 2>/dev/null | anew -q hosts/cdn_providers.txt
 			fi
 		fi
 
