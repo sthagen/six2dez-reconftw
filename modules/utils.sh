@@ -617,6 +617,19 @@ function sanitize_ip() {
     return 0
 }
 
+# Sanitize a single entry from a -l list file.
+# Detects IP/CIDR vs domain and applies the appropriate sanitizer.
+# Outputs the sanitized value; returns 1 if the entry is invalid.
+# Usage: domain=$(_sanitize_list_entry "$raw") || continue
+_sanitize_list_entry() {
+    local raw="$1"
+    if [[ "$raw" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+(/[0-9]+)?$ ]]; then
+        sanitize_ip "$raw"
+    else
+        sanitize_domain "$raw"
+    fi
+}
+
 ###############################################################################################################
 ####################################### SECURITY CHECKS #######################################################
 ###############################################################################################################

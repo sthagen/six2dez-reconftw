@@ -130,7 +130,7 @@ function webprobe_simple() {
 		        local probe_first_line probe_is_json
 		        probe_first_line="$(awk 'NF {print; exit}' .tmp/web_full_info_probe.txt 2>/dev/null || true)"
 		        probe_is_json=false
-		        [[ "$probe_first_line" =~ ^[[:space:]]*\\{ ]] && probe_is_json=true
+		        [[ "$probe_first_line" =~ ^[[:space:]]*\{ ]] && probe_is_json=true
 
 		        # Always start fresh for this run (used by urlchecks diff too).
 		        : >.tmp/probed_tmp.txt 2>/dev/null || true
@@ -141,7 +141,7 @@ function webprobe_simple() {
 		            if ! cat .tmp/web_full_info_probe.txt .tmp/web_full_info.txt 2>>"$LOGFILE" \
 		                | jq -cs 'unique_by(.input)[]' 2>>"$LOGFILE" >webs/web_full_info.txt; then
 		                log_note "webprobe_simple: failed to merge httpx JSON; falling back to probe-only" "${FUNCNAME[0]}" "${LINENO}"
-		                awk 'match($0, /^[[:space:]]*\\{/) {print}' .tmp/web_full_info_probe.txt >.tmp/web_full_info_merge_input.jsonl 2>/dev/null || true
+		                awk 'match($0, /^[[:space:]]*\{/) {print}' .tmp/web_full_info_probe.txt >.tmp/web_full_info_merge_input.jsonl 2>/dev/null || true
 		                if [[ -s ".tmp/web_full_info_merge_input.jsonl" ]]; then
 		                    jq -cs 'unique_by(.input)[]' .tmp/web_full_info_merge_input.jsonl 2>>"$LOGFILE" >webs/web_full_info.txt || : >webs/web_full_info.txt
 		                else
@@ -2007,7 +2007,7 @@ function wordlist_gen() {
 
         start_func "${FUNCNAME[0]}" "Wordlist Generation"
 
-        [[ -s ".tmp/url_extract_tmp.txt" ]] && cat webs/url_extract.txt | anew -q .tmp/url_extract_tmp.txt || true
+        [[ -s ".tmp/url_extract_tmp.txt" ]] && [[ -s "webs/url_extract.txt" ]] && cat webs/url_extract.txt | anew -q .tmp/url_extract_tmp.txt || true
         # Ensure url_extract_tmp.txt exists and is not empty
         if [[ -s ".tmp/url_extract_tmp.txt" ]]; then
             # Define patterns for keys and values

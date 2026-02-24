@@ -162,6 +162,7 @@ while true; do
             fi
             while IFS= read -r t; do
                 [[ -z "$t" ]] && continue
+                t=$(_sanitize_list_entry "$t") || continue
                 ipcidr_target "$t" "$list"
             done <"$list"
             shift 2
@@ -621,6 +622,7 @@ case $opt_mode in
             sed_i 's/\r$//' "$flist"
             while IFS= read -r domain <&3; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 start
                 recon
                 end
@@ -642,6 +644,7 @@ case $opt_mode in
             sed_i 's/\r$//' "$flist"
             while IFS= read -r domain <&3; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 subs_menu
             done 3<"$flist"
         else
@@ -656,6 +659,7 @@ case $opt_mode in
             sed_i 's/\r$//' "$flist"
             while IFS= read -r domain <&3; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 passive
             done 3<"$flist"
         else
@@ -671,6 +675,7 @@ case $opt_mode in
             sed_i 's/\r$//' "$flist"
             while IFS= read -r domain <&3; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 all
             done 3<"$flist"
         else
@@ -702,6 +707,7 @@ case $opt_mode in
             sed_i 's/\r$//' "$flist"
             while IFS= read -r domain <&3; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 start
                 osint
                 end
@@ -720,6 +726,7 @@ case $opt_mode in
             sed_i 's/\r$//' "$flist"
             while IFS= read -r domain <&3; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 zen_menu
             done 3<"$flist"
         else
