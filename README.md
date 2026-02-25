@@ -598,11 +598,11 @@ TLS_PORTS="21,22,25,80,110,135,143,261,271,324,443,448,465,563,614,631,636,664,6
 INSCOPE=false # Uses inscope tool to filter the scope, requires .scope file in reconftw folder
 
 # Web detection
-WEBPROBESIMPLE=true # Web probing on 80/443
-WEBPROBEFULL=true # Web probing in a large port list
+WEBPROBEFULL=true # Unified web probing over configured ports
 WEBSCREENSHOT=true # Webs screenshooting
 VIRTUALHOSTS=false # Check virtualhosts by fuzzing HOST header
 UNCOMMON_PORTS_WEB="81,300,591,593,832,981,1010,1311,1099,2082,2095,2096,2480,3000,3001,3002,3003,3128,3333,4243,4567,4711,4712,4993,5000,5104,5108,5280,5281,5601,5800,6543,7000,7001,7396,7474,8000,8001,8008,8014,8042,8060,8069,8080,8081,8083,8088,8090,8091,8095,8118,8123,8172,8181,8222,8243,8280,8281,8333,8337,8443,8500,8834,8880,8888,8983,9000,9001,9043,9060,9080,9090,9091,9092,9200,9443,9502,9800,9981,10000,10250,11371,12443,15672,16080,17778,18091,18092,20720,32000,55440,55672"
+WEBPROBE_PORTS="80,443,${UNCOMMON_PORTS_WEB}" # Ports used by webprobe_full
 
 # Host
 FAVIRECON=true # Favicon-based technology recon for discovered web targets
@@ -645,7 +645,7 @@ FUZZ_RECURSION_DEPTH=2 # ffuf recursion depth used in DEEP mode
 IIS_SHORTNAME=true
 CMS_SCANNER=true # CMS scanner
 WORDLIST=true # Wordlist generation
-ROBOTSWORDLIST=true # Check historic disallow entries on waybackMachine
+ROBOTSWORDLIST=true # Check historic disallow entries on waybackMachine (DEEP mode only)
 PASSWORD_DICT=true # Generate password dictionary
 PASSWORD_DICT_ENGINE=cewler # cewler|pydictor
 PASSWORD_MIN_LENGTH=5 # Min password length
@@ -694,7 +694,6 @@ PROXY=false # Send to proxy the websites found
 SENDZIPNOTIFY=false # Send to zip the results (over notify)
 PRESERVE=true      # set to true to avoid deleting the .called_fn files on really large scans
 FFUF_FLAGS=" -mc all -fc 404 -sf -noninteractive -of json" # Ffuf flags
-HTTPX_FLAGS=" -follow-redirects -random-agent -status-code -silent -title -web-server -tech-detect -location -content-length" # Httpx flags for simple web probing
 
 # HTTP options
 HEADER="User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:72.0) Gecko/20100101 Firefox/72.0" # Default header
@@ -881,6 +880,7 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
 | `-f`              | Custom configuration file path                           |
 | `-o`              | Output directory for results                             |
 | `-v`              | Enable Axiom distributed scanning                        |
+| `--vps-count`     | Override Axiom fleet instance count for this run         |
 | `-q`              | Set rate limit (requests per second)                     |
 | `-y`              | Enables AI results analysis                              |
 | `--check-tools`   | Exit if required tools are missing                       |
@@ -941,33 +941,39 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
    ./reconftw.sh -d target.com -r -v
    ```
 
-8. **Full Recon with Attacks (YOLO Mode)**:
+8. **Axiom Integration with fleet override**:
+
+   ```bash
+   ./reconftw.sh -d target.com -r -v 30
+   ```
+
+9. **Full Recon with Attacks (YOLO Mode)**:
 
    ```bash
    ./reconftw.sh -d target.com -a
    ```
 
-9. **Show Help**:
+10. **Show Help**:
    ```bash
    ./reconftw.sh -h
    ```
 
-10. **Force cache refresh**:
+11. **Force cache refresh**:
    ```bash
    ./reconftw.sh -d target.com -r --refresh-cache
    ```
 
-11. **Export all report artifacts**:
+12. **Export all report artifacts**:
    ```bash
    ./reconftw.sh -d target.com -r --export all
    ```
 
-12. **Continuous monitoring (every 30m, 48 cycles)**:
+13. **Continuous monitoring (every 30m, 48 cycles)**:
    ```bash
    ./reconftw.sh -d target.com -r --monitor --monitor-interval 30 --monitor-cycles 48
    ```
 
-13. **Rebuild reports only (no scan):**
+14. **Rebuild reports only (no scan):**
    ```bash
    ./reconftw.sh -d target.com --report-only --export all
    ```

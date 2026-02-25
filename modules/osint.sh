@@ -676,7 +676,8 @@ function cloud_enum_scan() {
         && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 
         local cloud_enum_profile cloud_enum_mutations cloud_enum_quickscan cloud_enum_threads
-        local cloud_enum_python cloud_enum_script company_name
+        local company_name
+        local -a cloud_enum_runtime_cmd cloud_enum_cmd
         cloud_enum_profile=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
         case "$cloud_enum_profile" in
             optimized)
@@ -697,10 +698,8 @@ function cloud_enum_scan() {
             cloud_enum_threads=20
         fi
 
-        cloud_enum_python="${tools}/cloud_enum/venv/bin/python3"
-        cloud_enum_script="${tools}/cloud_enum/cloud_enum.py"
-        if [[ ! -f "$cloud_enum_script" ]] || [[ ! -x "$cloud_enum_python" ]]; then
-            _print_msg WARN "${FUNCNAME[0]}: cloud_enum runtime not found at ${tools}/cloud_enum"
+        if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
+            _print_msg WARN "${FUNCNAME[0]}: cloud_enum runtime not found (checked ${tools}/cloud_enum and PATH)"
             return 0
         fi
         if [[ "$cloud_enum_quickscan" != true ]] && [[ ! -f "$cloud_enum_mutations" ]]; then
@@ -710,10 +709,9 @@ function cloud_enum_scan() {
 
         start_func "${FUNCNAME[0]}" "Cloud storage enumeration"
         company_name=$(unfurl format %r <<<"$domain")
-        local -a cloud_enum_cmd=(
+        cloud_enum_cmd=(
             env PYTHONWARNINGS=ignore
-            "$cloud_enum_python"
-            "$cloud_enum_script"
+            "${cloud_enum_runtime_cmd[@]}"
             -k "$company_name"
             -k "$domain"
             -k "${domain%%.*}"

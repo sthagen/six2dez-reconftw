@@ -2004,7 +2004,8 @@ function s3buckets() {
         rm -f .tmp/cloud_enum_s3_legacy.txt .tmp/cloud_enum_public_aws_targets.txt .tmp/cloud_enum_public_gcp_targets.txt 2>/dev/null || true
 
         local cloud_enum_profile cloud_enum_threads cloud_enum_mutations cloud_enum_quickscan
-        local cloud_enum_python cloud_enum_script cloud_enum_status cloud_enum_rc company_name
+        local cloud_enum_status cloud_enum_rc company_name
+        local -a cloud_enum_runtime_cmd cloud_enum_cmd
         cloud_enum_profile=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
         cloud_enum_threads="${CLOUD_ENUM_S3_THREADS:-20}"
         if [[ ! "$cloud_enum_threads" =~ ^[0-9]+$ ]] || [[ "$cloud_enum_threads" -le 0 ]]; then
@@ -2029,16 +2030,14 @@ function s3buckets() {
                 ;;
         esac
 
-        cloud_enum_python="${tools}/cloud_enum/venv/bin/python3"
-        cloud_enum_script="${tools}/cloud_enum/cloud_enum.py"
         printf "Processing domain: %s\n" "$domain" >>"$LOGFILE"
         print_notice RUN "cloud_enum" "enumerating cloud buckets (cloud_enum)"
         start_subfunc "cloud_enum" "enumerating cloud buckets (cloud_enum)"
         cloud_enum_status="OK"
         cloud_enum_rc=0
 
-        if [[ ! -f "$cloud_enum_script" ]] || [[ ! -x "$cloud_enum_python" ]]; then
-            _print_msg WARN "cloud_enum runtime missing in ${tools}/cloud_enum; skipping cloud enumeration."
+        if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
+            _print_msg WARN "cloud_enum runtime missing (checked ${tools}/cloud_enum and PATH); skipping cloud enumeration."
             cloud_enum_status="WARN"
             cloud_enum_rc=1
         elif [[ "$cloud_enum_quickscan" != true ]] && [[ ! -f "$cloud_enum_mutations" ]]; then
@@ -2047,10 +2046,9 @@ function s3buckets() {
             cloud_enum_rc=1
         else
             company_name=$(unfurl format %r <<<"$domain")
-            local -a cloud_enum_cmd=(
+            cloud_enum_cmd=(
                 env PYTHONWARNINGS=ignore
-                "$cloud_enum_python"
-                "$cloud_enum_script"
+                "${cloud_enum_runtime_cmd[@]}"
                 -k "$company_name"
                 -k "$domain"
                 -k "${domain%%.*}"

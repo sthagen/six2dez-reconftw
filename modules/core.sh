@@ -203,6 +203,42 @@ function check_version() {
     fi
 }
 
+resolve_cloud_enum_runtime() {
+    local -n runtime_cmd_ref="$1"
+    local cloud_enum_python cloud_enum_script cloud_enum_bin
+
+    runtime_cmd_ref=()
+    cloud_enum_python="${tools}/cloud_enum/venv/bin/python3"
+    cloud_enum_script="${tools}/cloud_enum/cloud_enum.py"
+
+    if [[ -x "$cloud_enum_python" ]] && [[ -f "$cloud_enum_script" ]]; then
+        runtime_cmd_ref=("$cloud_enum_python" "$cloud_enum_script")
+        return 0
+    fi
+
+    cloud_enum_bin="$(command -v cloud_enum 2>/dev/null || true)"
+    if [[ -n "$cloud_enum_bin" ]]; then
+        runtime_cmd_ref=("$cloud_enum_bin")
+        return 0
+    fi
+
+    return 1
+}
+
+format_pending_tools_message() {
+    local -a missing=("$@")
+    local joined=""
+
+    if (( ${#missing[@]} == 1 )); then
+        printf "Pending tool: %s" "${missing[0]}"
+        return 0
+    fi
+
+    printf -v joined "%s, " "${missing[@]}"
+    joined="${joined%, }"
+    printf "Pending tools: %s" "$joined"
+}
+
 function tools_installed() {
     local all_installed=true
     local missing_tools=()
@@ -238,8 +274,6 @@ function tools_installed() {
         ["getjswords"]="${tools}/getjswords.py"
         ["JSA"]="${tools}/JSA/jsa.py"
         ["JSA_python"]="${tools}/JSA/venv/bin/python3"
-        ["cloud_enum"]="${tools}/cloud_enum/cloud_enum.py"
-        ["cloud_enum_python"]="${tools}/cloud_enum/venv/bin/python3"
         ["nmap-parse-output"]="${tools}/ultimate-nmap-parser/ultimate-nmap-parser.sh"
         ["regulator"]="${tools}/regulator/main.py"
         ["regulator_python"]="${tools}/regulator/venv/bin/python3"
@@ -378,14 +412,16 @@ function tools_installed() {
         fi
     done
 
+    local -a cloud_enum_runtime_cmd=()
+    if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
+        all_installed=false
+        missing_tools+=("cloud_enum")
+    fi
+
     if [[ $all_installed == true ]]; then
         : # Tools check OK, no output
     else
-        if (( ${#missing_tools[@]} == 1 )); then
-            _print_msg WARN "Pending tool: ${missing_tools[0]}"
-        else
-            _print_msg WARN "Pending tools: ${missing_tools[*]}"
-        fi
+        _print_msg WARN "$(format_pending_tools_message "${missing_tools[@]}")"
 
         mark_missing_tools_warn_once "${missing_tools[@]}"
     fi

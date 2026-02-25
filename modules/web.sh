@@ -1,7 +1,7 @@
 #!/bin/bash
 # shellcheck disable=SC2154  # Variables defined in reconftw.cfg
 # reconFTW - Web analysis module
-# Contains: webprobe_simple, webprobe_full, screenshot, virtualhosts,
+# Contains: webprobe_full, screenshot, virtualhosts,
 #           favirecon_tech,
 #           portscan, cdnprovider, waf_checks, nuclei_check, graphql_scan,
 #           param_discovery, grpc_reflection, fuzz, iishortname, cms_scanner,
@@ -17,27 +17,6 @@
 # Helper Functions for Web Module
 ###############################################################################
 
-# Run httpx probe on input file
-# Usage: _run_httpx input_file output_file [extra_flags...]
-_run_httpx() {
-    local input="$1"
-    local output="$2"
-    shift 2
-    local extra_flags=("$@")
-    
-    if [[ $AXIOM != true ]]; then
-        # shellcheck disable=SC2086  # HTTPX_FLAGS intentionally word-split
-        run_command httpx $HTTPX_FLAGS -no-color -json -random-agent \
-            "${extra_flags[@]}" \
-            -o "$output" <"$input" 2>>"$LOGFILE" >/dev/null
-    else
-        # shellcheck disable=SC2086  # HTTPX_FLAGS intentionally word-split
-        run_command axiom-scan "$input" -m httpx $HTTPX_FLAGS -no-color -json -random-agent \
-            "${extra_flags[@]}" \
-            -o "$output" "$AXIOM_EXTRA_ARGS" 2>>"$LOGFILE" >/dev/null
-    fi
-}
-
 # Normalize wildcard-prefixed hosts in URL-like lines.
 # Examples:
 #   *.api.example.com -> api.example.com
@@ -46,56 +25,43 @@ _normalize_probe_urls() {
     sed -E 's#^(https?://)\*\.#\1#; s#^\*\.##'
 }
 
-# Detect whether a probe output file contains JSONL.
-# Returns 0 when the first non-empty line starts with "{", else 1.
-_probe_output_is_json() {
+# Validate probe output as JSONL. Empty files are valid.
+# Usage: _validate_probe_jsonl <input_file>
+_validate_probe_jsonl() {
     local input_file="$1"
-    local first_line
-    first_line="$(awk 'NF {print; exit}' "$input_file" 2>/dev/null || true)"
-    [[ "$first_line" =~ ^[[:space:]]*\{ ]]
+
+    [[ ! -s "$input_file" ]] && return 0
+    jq -e . "$input_file" >/dev/null 2>>"$LOGFILE"
 }
 
-# Extract in-scope URLs from a probe file that may be JSONL or plain URL list.
-# Usage: _extract_probe_urls <input_file> <domain_filter> <output_file>
-_extract_probe_urls() {
+# Extract in-scope URLs from a JSONL probe file.
+# Usage: _extract_probe_urls_from_json <input_file> <domain_filter> <output_file>
+_extract_probe_urls_from_json() {
     local input_file="$1"
     local dom_filter="$2"
     local output_file="$3"
 
     [[ ! -s "$input_file" ]] && return 0
 
-    if _probe_output_is_json "$input_file"; then
-        jq -r 'try (.url // empty)' "$input_file" 2>/dev/null \
-            | awk -v dom="$dom_filter" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' \
-            | _normalize_probe_urls \
-            | anew_q_safe "$output_file"
-    else
-        awk -v dom="$dom_filter" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' "$input_file" 2>/dev/null \
-            | _normalize_probe_urls \
-            | anew_q_safe "$output_file"
-    fi
+    jq -r 'try (.url // empty)' "$input_file" 2>/dev/null \
+        | awk -v dom="$dom_filter" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' \
+        | _normalize_probe_urls \
+        | sed '/^$/d' \
+        | anew_q_safe "$output_file"
 }
 
-# Process httpx JSON output: extract URLs and web info
-# Usage: _process_httpx_output json_file url_output info_output
-_process_httpx_output() {
+# Render full-info JSONL into plain text entries.
+# Usage: _write_plain_webinfo <input_jsonl> <domain_filter> <output_file>
+_write_plain_webinfo() {
     local json_file="$1"
-    local url_output="$2"
-    local info_output="$3"
-    
-    [[ ! -s "$json_file" ]] && return 0
-    
-    # Extract URLs
-    jq -r 'try .url' "$json_file" 2>/dev/null \
-        | grep "$domain" \
-        | grep -aEo 'https?://[^ ]+' \
-        | _normalize_probe_urls \
-        | anew_q_safe "$url_output"
+    local dom_filter="$2"
+    local output_file="$3"
 
-    # Extract plain web info
+    [[ ! -s "$json_file" ]] && return 0
+
     jq -r 'try . | "\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' "$json_file" \
-        | grep "$domain" \
-        | anew_q_safe "$info_output"
+        | awk -v dom="$dom_filter" 'index($0, dom)' \
+        | anew_q_safe "$output_file"
 }
 
 # Send URLs to proxy if enabled
@@ -131,133 +97,6 @@ print_webs_summary() {
 # Main Web Functions  
 ###############################################################################
 
-function webprobe_simple() {
-
-    # Create necessary directories
-    if ! ensure_dirs .tmp webs subdomains; then return 1; fi
-
-    # Check if the function should run
-	    if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WEBPROBESIMPLE == true ]]; then
-	        start_subfunc "${FUNCNAME[0]}" "Running: HTTP probing $domain"
-
-	        # Baseline cache files (some modules merge into these).
-	        touch .tmp/web_full_info.txt .tmp/web_full_info_probe.txt webs/web_full_info.txt webs/webs.txt 2>/dev/null || true
-
-	        # If in multi mode and subdomains.txt doesn't exist, create it
-	        if [[ -n $multi ]] && [[ ! -f "$dir/subdomains/subdomains.txt" ]]; then
-	            printf "%b\n" "$domain" >"$dir/subdomains/subdomains.txt"
-	            touch .tmp/web_full_info.txt webs/web_full_info.txt
-	        fi
-
-        # Run httpx or axiom-scan
-        if [[ $AXIOM != true ]]; then
-            # shellcheck disable=SC2086  # HTTPX_FLAGS intentionally word-split
-            run_command httpx $HTTPX_FLAGS -no-color -json -random-agent -threads "$HTTPX_THREADS" -rl "$HTTPX_RATELIMIT" \
-                -retries 2 -timeout "$HTTPX_TIMEOUT" -o .tmp/web_full_info_probe.txt \
-                <subdomains/subdomains.txt 2>>"$LOGFILE" >/dev/null
-        else
-            # shellcheck disable=SC2086  # HTTPX_FLAGS intentionally word-split
-            run_command axiom-scan subdomains/subdomains.txt -m httpx $HTTPX_FLAGS -no-color -json -random-agent \
-                -threads "$HTTPX_THREADS" -rl "$HTTPX_RATELIMIT" -retries 2 -timeout "$HTTPX_TIMEOUT" \
-                -o .tmp/web_full_info_probe.txt "$AXIOM_EXTRA_ARGS" 2>>"$LOGFILE" >/dev/null
-	        fi
-
-		        # webprobe_simple is expected to write JSONL when using httpx -json.
-		        # Some runners (or wrappers) may produce a plain URL list instead.
-		        local probe_is_json probe_input_lines urls_extracted
-		        probe_is_json=false
-		        if _probe_output_is_json ".tmp/web_full_info_probe.txt"; then
-		            probe_is_json=true
-		        fi
-		        probe_input_lines=$(awk 'NF {c++} END {print c+0}' .tmp/web_full_info_probe.txt 2>/dev/null)
-
-		        # Always start fresh for this run (used by urlchecks diff too).
-		        : >.tmp/probed_tmp.txt 2>/dev/null || true
-
-		        if [[ "$probe_is_json" == true ]]; then
-		            # Merge current probe output with prior cache/state.
-		            touch .tmp/web_full_info_probe.txt .tmp/web_full_info.txt 2>/dev/null || true
-		            if ! cat .tmp/web_full_info_probe.txt .tmp/web_full_info.txt 2>>"$LOGFILE" \
-		                | jq -cs 'unique_by(.input)[]' 2>>"$LOGFILE" >webs/web_full_info.txt; then
-		                log_note "webprobe_simple: failed to merge httpx JSON; falling back to probe-only" "${FUNCNAME[0]}" "${LINENO}"
-		                awk 'match($0, /^[[:space:]]*\{/) {print}' .tmp/web_full_info_probe.txt >.tmp/web_full_info_merge_input.jsonl 2>/dev/null || true
-		                if [[ -s ".tmp/web_full_info_merge_input.jsonl" ]]; then
-		                    jq -cs 'unique_by(.input)[]' .tmp/web_full_info_merge_input.jsonl 2>>"$LOGFILE" >webs/web_full_info.txt || : >webs/web_full_info.txt
-		                else
-		                    : >webs/web_full_info.txt
-		                fi
-		            fi
-		            # Keep cache as JSONL for later merges.
-		            cp webs/web_full_info.txt .tmp/web_full_info.txt 2>/dev/null || true
-		        else
-		            log_note "webprobe_simple: probe output not JSON; treating as URL list" "${FUNCNAME[0]}" "${LINENO}"
-		        fi
-		        _extract_probe_urls ".tmp/web_full_info_probe.txt" "$domain" ".tmp/probed_tmp.txt" || true
-		        urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_tmp.txt 2>/dev/null)
-
-		        # Fallback: if extraction from probe output produced nothing, try cached JSON.
-		        if [[ "${urls_extracted:-0}" -eq 0 ]] && [[ -s ".tmp/web_full_info.txt" ]] && _probe_output_is_json ".tmp/web_full_info.txt"; then
-		            _extract_probe_urls ".tmp/web_full_info.txt" "$domain" ".tmp/probed_tmp.txt" || true
-		            urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_tmp.txt 2>/dev/null)
-		            log_note "webprobe_simple: fallback to .tmp/web_full_info.txt urls_extracted=${urls_extracted}" "${FUNCNAME[0]}" "${LINENO}"
-		        fi
-
-		        log_note "webprobe_simple: probe_input_lines=${probe_input_lines} urls_extracted=${urls_extracted:-0} probe_is_json=${probe_is_json}" "${FUNCNAME[0]}" "${LINENO}"
-
-	        # Adaptive throttling heuristics: mark slow hosts (429/403) from httpx
-	        if [[ -s "webs/web_full_info.txt" ]]; then
-	            jq -r 'try select(.status_code==403 or .status_code==429) | .url' webs/web_full_info.txt 2>/dev/null \
-	                | awk -F/ '{print $3}' | sed 's/\:$//' | sort -u >.tmp/slow_hosts.txt
-        fi
-
-        # Extract web info to plain text
-        if [[ -s "webs/web_full_info.txt" ]]; then
-            jq -r 'try . |"\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' webs/web_full_info.txt \
-                | grep "$domain" | anew_q_safe webs/web_full_info_plain.txt
-        fi
-
-        # Remove out-of-scope entries
-        if [[ -s $outOfScope_file ]]; then
-            if ! deleteOutScoped "$outOfScope_file" .tmp/probed_tmp.txt; then
-                print_warnf "Failed to delete out-of-scope entries."
-            fi
-	        fi
-
-	        touch .tmp/probed_tmp.txt
-
-	        # Count new websites
-	        if ! NUMOFLINES=$(anew_safe webs/webs.txt <.tmp/probed_tmp.txt 2>/dev/null | sed '/^$/d' | wc -l); then
-	            print_warnf "Failed to count new websites."
-	            NUMOFLINES=0
-	        fi
-
-	        # Update webs_all.txt
-	        ensure_webs_all || true
-
-	        # Asset store: append probed webs
-	        append_assets_from_file web url webs/webs.txt
-
-        end_subfunc "${NUMOFLINES} new websites resolved" "${FUNCNAME[0]}"
-
-        # Send websites to proxy if conditions met
-        if [[ $PROXY == true ]] && [[ -n $proxy_url ]] && [[ $(wc -l <webs/webs.txt) -le $DEEP_LIMIT2 ]]; then
-            notification "Sending websites to proxy" "info"
-            run_command ffuf -mc all -w webs/webs.txt -u FUZZ -replay-proxy "$proxy_url" 2>>"$LOGFILE" >/dev/null
-        fi
-
-    else
-        if [[ $WEBPROBESIMPLE == false ]]; then
-            skip_notification "disabled"
-        else
-            skip_notification "processed"
-        fi
-    fi
-
-    # Emit plugin event
-    plugins_emit after_webprobe "$domain" "$dir"
-
-}
-
 function webprobe_full() {
 
     # Create necessary directories
@@ -265,94 +104,186 @@ function webprobe_full() {
 
     # Check if the function should run
     if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $WEBPROBEFULL == true ]]; then
-        start_func "${FUNCNAME[0]}" "HTTP Probing Non-Standard Ports"
+        start_func "${FUNCNAME[0]}" "HTTP Probing Full Port Set"
+
+        # Prepare target/output files.
+        touch webs/webs.txt webs/webs_uncommon_ports.txt \
+            webs/web_full_info.txt webs/web_full_info_plain.txt \
+            webs/web_full_info_uncommon.txt webs/web_full_info_uncommon_plain.txt 2>/dev/null || true
+        : >.tmp/probed_common_ports_tmp.txt 2>/dev/null || true
+        : >.tmp/probed_uncommon_ports_tmp.txt 2>/dev/null || true
+        : >.tmp/probed_tmp.txt 2>/dev/null || true
+        : >.tmp/slow_hosts.txt 2>/dev/null || true
 
         # If in multi mode and subdomains.txt doesn't exist, create it
         if [[ -n $multi ]] && [[ ! -f "$dir/subdomains/subdomains.txt" ]]; then
             printf "%b\n" "$domain" >"$dir/subdomains/subdomains.txt"
-            touch webs/webs.txt
         fi
 
-        # Check if subdomains.txt is non-empty
-        if [[ -s "subdomains/subdomains.txt" ]]; then
-    if [[ $AXIOM != true ]]; then
-        # Run httpx on subdomains.txt
-        run_command httpx -follow-host-redirects -random-agent -status-code \
-            -p "$UNCOMMON_PORTS_WEB" -threads "$HTTPX_UNCOMMONPORTS_THREADS" \
-            -timeout "$HTTPX_UNCOMMONPORTS_TIMEOUT" -silent -retries 2 \
-            -title -web-server -tech-detect -location -no-color -json \
-            -o .tmp/web_full_info_uncommon.txt <subdomains/subdomains.txt 2>>"$LOGFILE" >/dev/null
-    else
-        # Run axiom-scan with httpx module on subdomains.txt
-        run_command axiom-scan subdomains/subdomains.txt -m httpx -follow-host-redirects \
-            -H "${HEADER}" -status-code -p "$UNCOMMON_PORTS_WEB" \
-            -threads "$HTTPX_UNCOMMONPORTS_THREADS" -timeout "$HTTPX_UNCOMMONPORTS_TIMEOUT" \
-            -silent -retries 2 -title -web-server -tech-detect -location -no-color -json \
-            -o .tmp/web_full_info_uncommon.txt "$AXIOM_EXTRA_ARGS" 2>>"$LOGFILE" >/dev/null
-    fi
+        if [[ ! -s "subdomains/subdomains.txt" ]]; then
+            end_func "No subdomains/subdomains.txt file found, web probing skipped." "${FUNCNAME[0]}" "SKIP_NOINPUT"
+            plugins_emit after_webprobe "$domain" "$dir"
+            return 0
         fi
 
-	        # Process web_full_info_uncommon.txt
-	        if [[ -s ".tmp/web_full_info_uncommon.txt" ]]; then
-	            local uncommon_is_json uncommon_input_lines uncommon_urls_extracted
-	            uncommon_is_json=false
-	            if _probe_output_is_json ".tmp/web_full_info_uncommon.txt"; then
-	                uncommon_is_json=true
-	            fi
-	            uncommon_input_lines=$(awk 'NF {c++} END {print c+0}' .tmp/web_full_info_uncommon.txt 2>/dev/null)
+        local probe_ports="${WEBPROBE_PORTS:-80,443,${UNCOMMON_PORTS_WEB:-}}"
+        probe_ports=$(printf '%s' "$probe_ports" | sed -E 's/,+/,/g; s/^,//; s/,$//')
+        local probe_out=".tmp/web_full_info_probe.txt"
+        local common_json_tmp=".tmp/web_full_info_common_current.txt"
+        local uncommon_json_tmp=".tmp/web_full_info_uncommon_current.txt"
+        local -a axiom_extra_args=()
 
-	            : >.tmp/probed_uncommon_ports_tmp.txt 2>/dev/null || true
-	            _extract_probe_urls ".tmp/web_full_info_uncommon.txt" "$domain" ".tmp/probed_uncommon_ports_tmp.txt" || true
+        : >"$probe_out" 2>/dev/null || true
+        : >"$common_json_tmp" 2>/dev/null || true
+        : >"$uncommon_json_tmp" 2>/dev/null || true
 
-	            if [[ "$uncommon_is_json" != true ]]; then
-	                log_note "webprobe_full: probe output not JSON; treating as URL list" "${FUNCNAME[0]}" "${LINENO}"
-	                awk -v dom="$domain" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' .tmp/web_full_info_uncommon.txt 2>/dev/null \
-	                    | _normalize_probe_urls \
-	                    | anew_q_safe webs/web_full_info_uncommon.txt
-	            fi
+        if [[ $AXIOM == true ]] && [[ -n "${AXIOM_EXTRA_ARGS:-}" ]]; then
+            local _ifs="$IFS"
+            IFS=' '
+            read -r -a axiom_extra_args <<<"$AXIOM_EXTRA_ARGS"
+            IFS="$_ifs"
+        fi
 
-	            if [[ "$uncommon_is_json" == true ]]; then
-	                # Extract plain web info
-	                jq -r 'try . | "\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' .tmp/web_full_info_uncommon.txt \
-	                    | grep "$domain" \
-	                    | anew_q_safe webs/web_full_info_uncommon_plain.txt
-
-	                # Update webs_full_info_uncommon.txt based on whether domain is IP
-	                if [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-	                    cat .tmp/web_full_info_uncommon.txt 2>>"$LOGFILE" | anew_q_safe webs/web_full_info_uncommon.txt
-	                else
-	                    grep "$domain" .tmp/web_full_info_uncommon.txt | anew_q_safe webs/web_full_info_uncommon.txt
-	                fi
-	            fi
-	            uncommon_urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_uncommon_ports_tmp.txt 2>/dev/null)
-
-	            # Fallback: try prior uncommon cache when current extraction yields nothing.
-	            if [[ "${uncommon_urls_extracted:-0}" -eq 0 ]] && [[ -s "webs/web_full_info_uncommon.txt" ]]; then
-	                _extract_probe_urls "webs/web_full_info_uncommon.txt" "$domain" ".tmp/probed_uncommon_ports_tmp.txt" || true
-	                uncommon_urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_uncommon_ports_tmp.txt 2>/dev/null)
-	                log_note "webprobe_full: fallback to webs/web_full_info_uncommon.txt urls_extracted=${uncommon_urls_extracted}" "${FUNCNAME[0]}" "${LINENO}"
-	            fi
-	            log_note "webprobe_full: probe_input_lines=${uncommon_input_lines} urls_extracted=${uncommon_urls_extracted:-0} probe_is_json=${uncommon_is_json}" "${FUNCNAME[0]}" "${LINENO}"
-
-            # Count new websites
-            if ! NUMOFLINES=$(anew_safe webs/webs_uncommon_ports.txt <.tmp/probed_uncommon_ports_tmp.txt | sed '/^$/d' | wc -l); then
-                print_warnf "Failed to count new websites."
-                NUMOFLINES=0
+        if [[ $AXIOM != true ]]; then
+            local -a httpx_cmd=(
+                httpx
+                -follow-host-redirects
+                -random-agent
+                -status-code
+                -p "$probe_ports"
+                -threads "$HTTPX_UNCOMMONPORTS_THREADS"
+                -rl "$HTTPX_RATELIMIT"
+                -timeout "$HTTPX_UNCOMMONPORTS_TIMEOUT"
+                -silent
+                -retries 2
+                -title
+                -web-server
+                -tech-detect
+                -location
+                -no-color
+                -json
+                -o "$probe_out"
+            )
+            run_command "${httpx_cmd[@]}" <subdomains/subdomains.txt 2>>"$LOGFILE" >/dev/null
+        else
+            local -a axiom_cmd=(
+                axiom-scan
+                subdomains/subdomains.txt
+                -m httpx
+                -follow-host-redirects
+                -H "${HEADER}"
+                -status-code
+                -p "$probe_ports"
+                -threads "$HTTPX_UNCOMMONPORTS_THREADS"
+                -timeout "$HTTPX_UNCOMMONPORTS_TIMEOUT"
+                -silent
+                -retries 2
+                -title
+                -web-server
+                -tech-detect
+                -location
+                -no-color
+                -json
+                -o "$probe_out"
+            )
+            if [[ ${#axiom_extra_args[@]} -gt 0 ]]; then
+                axiom_cmd+=("${axiom_extra_args[@]}")
             fi
+            run_command "${axiom_cmd[@]}" 2>>"$LOGFILE" >/dev/null
+        fi
 
-            # Notify user
-	        notification "Uncommon web ports: ${NUMOFLINES} new websites" "good"
+        if [[ -s "$probe_out" ]] && ! _validate_probe_jsonl "$probe_out"; then
+            end_func "Invalid non-JSON output detected in ${probe_out}" "${FUNCNAME[0]}" "FAIL"
+            plugins_emit after_webprobe "$domain" "$dir"
+            return 1
+        fi
 
-	        # Update webs_all.txt
-	        ensure_webs_all || true
+        if [[ -s "$probe_out" ]]; then
+            jq -cr --arg dom "$domain" '
+                def effective_port:
+                    if (.port? != null and ((.port | tostring | length) > 0)) then (.port | tostring)
+                    elif ((.url // "") | test(":[0-9]+(/|$)")) then ((.url // "") | capture(":(?<p>[0-9]+)(/|$)").p)
+                    elif ((.url // "") | startswith("https://")) then "443"
+                    elif ((.url // "") | startswith("http://")) then "80"
+                    else ""
+                    end;
+                select((.url // "") | contains($dom))
+                | select(effective_port == "80" or effective_port == "443")
+            ' "$probe_out" 2>>"$LOGFILE" >"$common_json_tmp"
 
-	        # Send to proxy if conditions met
-	        if [[ $PROXY == true ]] && [[ -n $proxy_url ]] && [[ $(wc -l <webs/webs_uncommon_ports.txt) -le $DEEP_LIMIT2 ]]; then
-	            notification "Sending websites with uncommon ports to proxy" "info"
-	            run_command ffuf -mc all -w webs/webs_uncommon_ports.txt -u FUZZ -replay-proxy "$proxy_url" 2>>"$LOGFILE" >/dev/null
+            jq -cr --arg dom "$domain" '
+                def effective_port:
+                    if (.port? != null and ((.port | tostring | length) > 0)) then (.port | tostring)
+                    elif ((.url // "") | test(":[0-9]+(/|$)")) then ((.url // "") | capture(":(?<p>[0-9]+)(/|$)").p)
+                    elif ((.url // "") | startswith("https://")) then "443"
+                    elif ((.url // "") | startswith("http://")) then "80"
+                    else ""
+                    end;
+                select((.url // "") | contains($dom))
+                | select(effective_port != "80" and effective_port != "443")
+            ' "$probe_out" 2>>"$LOGFILE" >"$uncommon_json_tmp"
+        fi
+
+        if [[ -s "$common_json_tmp" ]]; then
+            cat "$common_json_tmp" | anew_q_safe "webs/web_full_info.txt"
+        fi
+        if [[ -s "$uncommon_json_tmp" ]]; then
+            cat "$uncommon_json_tmp" | anew_q_safe "webs/web_full_info_uncommon.txt"
+        fi
+
+        _write_plain_webinfo "$common_json_tmp" "$domain" "webs/web_full_info_plain.txt"
+        _write_plain_webinfo "$uncommon_json_tmp" "$domain" "webs/web_full_info_uncommon_plain.txt"
+
+        _extract_probe_urls_from_json "$common_json_tmp" "$domain" ".tmp/probed_common_ports_tmp.txt"
+        _extract_probe_urls_from_json "$uncommon_json_tmp" "$domain" ".tmp/probed_uncommon_ports_tmp.txt"
+
+        if [[ -s "$outOfScope_file" ]]; then
+            deleteOutScoped "$outOfScope_file" ".tmp/probed_common_ports_tmp.txt" || true
+            deleteOutScoped "$outOfScope_file" ".tmp/probed_uncommon_ports_tmp.txt" || true
+        fi
+
+        local common_new=0
+        local uncommon_new=0
+        if ! common_new=$(anew_safe "webs/webs.txt" <".tmp/probed_common_ports_tmp.txt" 2>/dev/null | sed '/^$/d' | wc -l); then
+            print_warnf "Failed to count common web targets."
+            common_new=0
+        fi
+        if ! uncommon_new=$(anew_safe "webs/webs_uncommon_ports.txt" <".tmp/probed_uncommon_ports_tmp.txt" 2>/dev/null | sed '/^$/d' | wc -l); then
+            print_warnf "Failed to count uncommon web targets."
+            uncommon_new=0
+        fi
+
+        cat ".tmp/probed_common_ports_tmp.txt" ".tmp/probed_uncommon_ports_tmp.txt" 2>/dev/null \
+            | sed '/^$/d' \
+            | sort -u >".tmp/probed_tmp.txt"
+
+        if [[ -s "$probe_out" ]]; then
+            jq -r 'try select(.status_code==403 or .status_code==429) | .url' "$probe_out" 2>/dev/null \
+                | awk -F/ '{print $3}' \
+                | sed 's/:.*$//' \
+                | sed '/^$/d' \
+                | sort -u >".tmp/slow_hosts.txt"
+        fi
+
+        notification "Common web ports: ${common_new} new websites" "good"
+        notification "Uncommon web ports: ${uncommon_new} new websites" "good"
+
+        ensure_webs_all || true
+        append_assets_from_file web url webs/webs.txt
+        append_assets_from_file web url webs/webs_uncommon_ports.txt
+
+        if [[ $PROXY == true ]] && [[ -n $proxy_url ]]; then
+            if [[ -s "webs/webs.txt" ]] && [[ $(wc -l <webs/webs.txt) -le $DEEP_LIMIT2 ]]; then
+                notification "Sending websites to proxy" "info"
+                run_command ffuf -mc all -w webs/webs.txt -u FUZZ -replay-proxy "$proxy_url" 2>>"$LOGFILE" >/dev/null
+            fi
+            if [[ -s "webs/webs_uncommon_ports.txt" ]] && [[ $(wc -l <webs/webs_uncommon_ports.txt) -le $DEEP_LIMIT2 ]]; then
+                notification "Sending websites with uncommon ports to proxy" "info"
+                run_command ffuf -mc all -w webs/webs_uncommon_ports.txt -u FUZZ -replay-proxy "$proxy_url" 2>>"$LOGFILE" >/dev/null
             fi
         fi
-        end_func "Results are saved in $domain/webs/webs_uncommon_ports.txt" "${FUNCNAME[0]}"
+
+        end_func "Results are saved in $domain/webs/[webs.txt|webs_uncommon_ports.txt|webs_all.txt]" "${FUNCNAME[0]}"
         print_webs_summary
     else
         if [[ $WEBPROBEFULL == false ]]; then
@@ -361,6 +292,9 @@ function webprobe_full() {
             skip_notification "processed"
         fi
     fi
+
+    # Emit plugin event
+    plugins_emit after_webprobe "$domain" "$dir"
 
 }
 
@@ -1507,7 +1441,7 @@ function cms_scanner() {
         elif [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             return
         else
-            skip_notification "processed"
+            skip_notification "processed-visible"
         fi
     fi
 }
@@ -2107,6 +2041,7 @@ function wordlist_gen_roboxtractor() {
 
     # Check if the function should run
     if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $ROBOTSWORDLIST == true ]] \
+        && [[ ${DEEP:-false} == true ]] \
         && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 
         start_func "${FUNCNAME[0]}" "Robots Wordlist Generation"
@@ -2136,6 +2071,8 @@ function wordlist_gen_roboxtractor() {
             skip_notification "disabled"
         elif [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             return
+        elif [[ ${DEEP:-false} != true ]]; then
+            skip_notification "mode"
         else
             skip_notification "processed"
         fi

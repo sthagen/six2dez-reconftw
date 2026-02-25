@@ -186,6 +186,26 @@ EOF
     [[ "$output" == *"SKIP"* ]]
 }
 
+@test "skip_notification processed-visible renders SKIP with cache reason and cache marker" {
+    OUTPUT_VERBOSITY=1
+    SHOW_CACHE=false
+    mkdir -p "$called_fn_dir"
+
+    test_func() {
+        skip_notification "processed-visible"
+    }
+
+    run test_func
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP"* ]]
+    [[ "$output" == *"reason: cache"* ]]
+    [[ "$output" != *"CACHE"* ]]
+    [ -f "$called_fn_dir/.cache_test_func" ]
+    [ ! -f "$called_fn_dir/.skip_test_func" ]
+    [ -f "$called_fn_dir/.status_reason_test_func" ]
+    [ "$(cat "$called_fn_dir/.status_reason_test_func")" = "cache" ]
+}
+
 ###############################################################################
 # output formatting tests
 ###############################################################################

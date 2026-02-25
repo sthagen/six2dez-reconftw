@@ -142,6 +142,14 @@ function validate_config() {
             warnings=$((warnings + 1))
         fi
     done
+    if [[ -n "${WEBPROBESIMPLE:-}" ]]; then
+        print_warnf "WEBPROBESIMPLE is deprecated/ignored; use WEBPROBEFULL + WEBPROBE_PORTS"
+        warnings=$((warnings + 1))
+    fi
+    if [[ -n "${HTTPX_FLAGS:-}" ]]; then
+        print_warnf "HTTPX_FLAGS is deprecated/ignored for web probing; use WEBPROBE_PORTS"
+        warnings=$((warnings + 1))
+    fi
 
     if [[ -n "${MONITOR_MIN_SEVERITY:-}" ]]; then
         case "${MONITOR_MIN_SEVERITY,,}" in
@@ -154,7 +162,7 @@ function validate_config() {
     fi
 
     # Validate numeric thread/rate variables
-    for var in FFUF_THREADS HTTPX_THREADS DALFOX_THREADS KATANA_THREADS HTTPX_RATELIMIT NUCLEI_RATELIMIT FFUF_RATELIMIT DNSX_THREADS DNSX_RATE_LIMIT PERMUTATIONS_SHORT_THRESHOLD; do
+    for var in FFUF_THREADS HTTPX_THREADS DALFOX_THREADS KATANA_THREADS HTTPX_RATELIMIT NUCLEI_RATELIMIT FFUF_RATELIMIT DNSX_THREADS DNSX_RATE_LIMIT PERMUTATIONS_SHORT_THRESHOLD AXIOM_FLEET_COUNT; do
         if [[ -n "${!var:-}" && ! "${!var}" =~ ^[0-9]+$ ]]; then
             print_errorf "%s must be numeric, got: %s" "$var" "${!var}"
             errors=$((errors + 1))

@@ -337,7 +337,7 @@ print_errorf() {
     _print_error "$msg"
 }
 
-# Generic message with [LEVEL] prefix (INFO/WARN/FAIL/OK)
+# Generic message with LEVEL prefix (INFO/WARN/FAIL/OK)
 # Usage: _print_msg WARN "something happened"
 _print_msg() {
     local level="$1"
@@ -378,7 +378,7 @@ _print_msg() {
     fi
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
     _ui_live_break_if_needed
-    printf "%b[%s]%b %s\n" "$color" "$level" "${reset:-}" "$msg"
+    printf "%b%-5s%b %s\n" "$color" "$level" "${reset:-}" "$msg"
 }
 
 # Print a warning message only once per run key.
@@ -405,7 +405,8 @@ warn_once() {
 # Module start message with timestamp
 # Usage: _print_module_start "OSINT"
 _print_module_start() {
-    local title="${1^^}"
+    local title
+    title=$(printf "%s" "${1:-}" | tr '[:lower:]' '[:upper:]')
     local ts
     ts=$(date +'%Y-%m-%d %H:%M:%S')
     # Reset dry-run tracking for new module.
@@ -431,7 +432,8 @@ _print_module_start() {
 # Module end message with timestamp
 # Usage: _print_module_end "OSINT"
 _print_module_end() {
-    local title="${1^^}"
+    local title
+    title=$(printf "%s" "${1:-}" | tr '[:lower:]' '[:upper:]')
     local ts
     ts=$(date +'%Y-%m-%d %H:%M:%S')
     if declare -F ui_log_jsonl >/dev/null 2>&1; then
@@ -547,21 +549,33 @@ _print_rule() {
 
 # Show skip notification for disabled/already-processed functions
 # Usage: skip_notification reason
-# reason: "disabled" | "processed" | custom message
+# reason: "disabled" | "mode" | "processed" | "processed-visible" | "noinput" | custom message
 skip_notification() {
     local func_name="${FUNCNAME[1]:-unknown}"
     local reason="${1:-mode or configuration settings}"
     local badge="SKIP"
     local reason_code="config"
+    local mark_cache=false
 
     case "$reason" in
         disabled)
             reason="mode or configuration settings"
             ;;
+        mode)
+            reason="mode constraints"
+            reason_code="mode"
+            ;;
         processed)
             reason="already processed"
             badge="CACHE"
             reason_code="cache"
+            mark_cache=true
+            ;;
+        processed-visible)
+            reason="already processed"
+            badge="SKIP"
+            reason_code="cache"
+            mark_cache=true
             ;;
         noinput)
             reason="missing required input data"
@@ -590,7 +604,7 @@ skip_notification() {
     # Emit skip marker for parent process (parallel mode)
     if [[ -n "${called_fn_dir:-}" ]]; then
         printf "%s\n" "$reason_code" >"${called_fn_dir}/.status_reason_${func_name}" 2>/dev/null || true
-        if [[ "$badge" == "CACHE" ]]; then
+        if [[ "$badge" == "CACHE" ]] || [[ "$mark_cache" == "true" ]]; then
             : >"${called_fn_dir}/.cache_${func_name}" 2>/dev/null || true
         else
             : >"${called_fn_dir}/.skip_${func_name}" 2>/dev/null || true
