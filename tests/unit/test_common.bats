@@ -187,6 +187,33 @@ EOF
 }
 
 ###############################################################################
+# output formatting tests
+###############################################################################
+
+@test "print_artifacts uses INFO Artifacts format without brackets" {
+    OUTPUT_VERBOSITY=1
+    bblue="<BLUE>"
+    reset="<RESET>"
+
+    run print_artifacts "osint/, subdomains/"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<BLUE>INFO<RESET> Artifacts: osint/, subdomains/"* ]]
+    [[ "$output" != *"[INFO] Artifacts"* ]]
+}
+
+@test "print_notice RUN uses cyan color for state" {
+    OUTPUT_VERBOSITY=1
+    cyan="<CYAN>"
+    reset="<RESET>"
+
+    run print_notice RUN "sub_brute" "bruteforcing subdomains"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<CYAN>RUN  <RESET>"* ]]
+    [[ "$output" == *"sub_brute"* ]]
+    [[ "$output" == *"(bruteforcing subdomains)"* ]]
+}
+
+###############################################################################
 # run_tool tests
 ###############################################################################
 

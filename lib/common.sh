@@ -295,7 +295,8 @@ print_artifacts() {
         fi
         return 0
     fi
-    printf "[INFO] Artifacts: %s\n" "$items"
+    _ui_live_break_if_needed
+    printf "%bINFO%b Artifacts: %s\n" "${bblue:-}" "${reset:-}" "$items"
 }
 
 # Print a notice line without affecting counters

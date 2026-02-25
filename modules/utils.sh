@@ -853,6 +853,7 @@ function cached_download_typed() {
     local cache_name="${3:-$(basename "$url")}"
     local cache_type="${4:-tools}"
     local cache_file="$CACHE_DIR/$cache_type/$cache_name"
+    local -a curl_cmd
 
     cache_init
 
@@ -867,7 +868,20 @@ function cached_download_typed() {
     printf "%b[%s] Downloading: %s%b\n" \
         "$bblue" "$(date +'%Y-%m-%d %H:%M:%S')" "$(basename "$url")" "$reset"
 
-    if run_command curl -sL "$url" -o "$destination"; then
+    curl_cmd=(curl -sL "$url" -o "$destination")
+    if [[ "$cache_type" == "resolvers" ]]; then
+        curl_cmd=(
+            curl -fsSL
+            --connect-timeout "${RESOLVER_DOWNLOAD_CONNECT_TIMEOUT:-10}"
+            --max-time "${RESOLVER_DOWNLOAD_MAX_TIME:-120}"
+            --retry "${RESOLVER_DOWNLOAD_RETRY:-2}"
+            --retry-delay "${RESOLVER_DOWNLOAD_RETRY_DELAY:-2}"
+            --retry-connrefused
+            "$url" -o "$destination"
+        )
+    fi
+
+    if run_command "${curl_cmd[@]}"; then
         # Save to cache for future use
         cp "$destination" "$cache_file"
         printf "%b[%s] Cached for future use: %s%b\n" \
@@ -1255,6 +1269,68 @@ _select_dns_resolver() {
     esac
 }
 
+# Return 0 when timeout should be enforced, 1 when disabled.
+# Usage: _dns_timeout_enabled <timeout_value>
+_dns_timeout_enabled() {
+    case "${1:-0}" in
+        "" | 0 | 0s | 0m | 0h | 0d) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+# Ensure resolver files required by the selected resolver mode are present.
+# Usage: _ensure_dns_resolver_files <dnsx|puredns>
+_ensure_dns_resolver_files() {
+    local resolver_mode="$1"
+
+    case "$resolver_mode" in
+        dnsx)
+            if [[ ! -s "$resolvers_trusted" ]]; then
+                print_errorf "Missing required trusted resolvers file for dnsx: %s" "$resolvers_trusted"
+                return 1
+            fi
+            ;;
+        puredns)
+            if [[ ! -s "$resolvers" ]]; then
+                print_errorf "Missing required resolvers file for puredns: %s" "$resolvers"
+                return 1
+            fi
+            if [[ ! -s "$resolvers_trusted" ]]; then
+                print_errorf "Missing required trusted resolvers file for puredns: %s" "$resolvers_trusted"
+                return 1
+            fi
+            ;;
+        *)
+            print_errorf "Unsupported DNS resolver mode: %s" "$resolver_mode"
+            return 1
+            ;;
+    esac
+
+    return 0
+}
+
+# Execute DNS command with heartbeat and optional hard-timeout.
+# Usage: _run_dns_with_heartbeat <label> <timeout_value> <command...>
+_run_dns_with_heartbeat() {
+    local label="$1"
+    local timeout_value="$2"
+    shift 2
+
+    local heartbeat_interval="${DNS_HEARTBEAT_INTERVAL_SECONDS:-20}"
+    [[ "$heartbeat_interval" =~ ^[0-9]+$ ]] || heartbeat_interval=20
+
+    if _dns_timeout_enabled "$timeout_value"; then
+        if [[ -n "${TIMEOUT_CMD:-}" ]]; then
+            run_with_heartbeat "$label" "$heartbeat_interval" "$TIMEOUT_CMD" -k 10s "$timeout_value" "$@"
+        else
+            warn_once "dns-timeout-command-missing" "DNS timeout requested but timeout command is unavailable; continuing without hard timeout."
+            run_with_heartbeat "$label" "$heartbeat_interval" "$@"
+        fi
+    else
+        run_with_heartbeat "$label" "$heartbeat_interval" "$@"
+    fi
+}
+
 # Resolve a list of domains using the auto-selected resolver.
 # Usage: _resolve_domains <input_file> <output_file>
 # Replaces all direct puredns resolve calls for consistent NAT-safe behavior.
@@ -1264,18 +1340,31 @@ _resolve_domains() {
     local resolver
     resolver=$(_select_dns_resolver)
 
+    _ensure_dns_resolver_files "$resolver" || return 1
+
     if [[ "$resolver" == "dnsx" ]]; then
-        run_command dnsx -l "$input_file" -silent -retry 2 \
+        local raw_output_file="${output_file}.dnsx.raw"
+        if ! _run_dns_with_heartbeat "dns resolve (${resolver})" "${DNS_RESOLVE_TIMEOUT:-0}" \
+            dnsx -l "$input_file" -silent -retry 2 \
             -t "${DNSX_THREADS:-25}" -rl "${DNSX_RATE_LIMIT:-100}" \
-            -r "$resolvers_trusted" -wt 5 2>>"$LOGFILE" \
-            | cut -d' ' -f1 | sort -u > "$output_file"
+            -r "$resolvers_trusted" -wt 5 -o "$raw_output_file"; then
+            rm -f "$raw_output_file" 2>/dev/null || true
+            return 1
+        fi
+        if [[ -s "$raw_output_file" ]]; then
+            cut -d' ' -f1 "$raw_output_file" | sort -u >"$output_file"
+        else
+            : >"$output_file"
+        fi
+        rm -f "$raw_output_file" 2>/dev/null || true
     else
-        run_command puredns resolve "$input_file" -w "$output_file" \
+        _run_dns_with_heartbeat "dns resolve (${resolver})" "${DNS_RESOLVE_TIMEOUT:-0}" \
+            puredns resolve "$input_file" -w "$output_file" \
             -r "$resolvers" --resolvers-trusted "$resolvers_trusted" \
             -l "$PUREDNS_PUBLIC_LIMIT" --rate-limit-trusted "$PUREDNS_TRUSTED_LIMIT" \
             --wildcard-tests "$PUREDNS_WILDCARDTEST_LIMIT" \
             --wildcard-batch "$PUREDNS_WILDCARDBATCH_LIMIT" \
-            2>>"$LOGFILE" >/dev/null
+            || return 1
     fi
 }
 
@@ -1295,17 +1384,30 @@ _bruteforce_domains() {
     local resolver
     resolver=$(_select_dns_resolver)
 
+    _ensure_dns_resolver_files "$resolver" || return 1
+
     if [[ "$resolver" == "dnsx" ]]; then
-        run_command dnsx -d "$target_domain" -w "$wordlist" -silent -retry 2 \
+        local raw_output_file="${output_file}.dnsx.raw"
+        if ! _run_dns_with_heartbeat "dns bruteforce (${resolver})" "${DNS_BRUTE_TIMEOUT:-0}" \
+            dnsx -d "$target_domain" -w "$wordlist" -silent -retry 2 \
             -t "${DNSX_THREADS:-25}" -rl "${DNSX_RATE_LIMIT:-100}" \
-            -r "$resolvers_trusted" -wt 5 2>>"$LOGFILE" \
-            | cut -d' ' -f1 | sort -u > "$output_file"
+            -r "$resolvers_trusted" -wt 5 -o "$raw_output_file"; then
+            rm -f "$raw_output_file" 2>/dev/null || true
+            return 1
+        fi
+        if [[ -s "$raw_output_file" ]]; then
+            cut -d' ' -f1 "$raw_output_file" | sort -u >"$output_file"
+        else
+            : >"$output_file"
+        fi
+        rm -f "$raw_output_file" 2>/dev/null || true
     else
-        run_command puredns bruteforce "$wordlist" "$target_domain" \
+        _run_dns_with_heartbeat "dns bruteforce (${resolver})" "${DNS_BRUTE_TIMEOUT:-0}" \
+            puredns bruteforce "$wordlist" "$target_domain" \
             -w "$output_file" -r "$resolvers" --resolvers-trusted "$resolvers_trusted" \
             -l "$PUREDNS_PUBLIC_LIMIT" --rate-limit-trusted "$PUREDNS_TRUSTED_LIMIT" \
             --wildcard-tests "$PUREDNS_WILDCARDTEST_LIMIT" \
             --wildcard-batch "$PUREDNS_WILDCARDBATCH_LIMIT" \
-            2>>"$LOGFILE" >/dev/null
+            || return 1
     fi
 }

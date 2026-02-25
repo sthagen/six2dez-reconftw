@@ -433,6 +433,7 @@ The `reconftw.cfg` file controls the entire execution of reconFTW. It allows fin
 - **Automation & Data**: Control quick rescan heuristics, asset logging, chunk sizes, hotlists, and debug tracing (`QUICK_RESCAN`, `ASSET_STORE`, `CHUNK_LIMIT`, `HOTLIST_TOP`, `SHOW_COMMANDS`).
 - **Disk & Logging**: Pre-flight disk check (`MIN_DISK_SPACE_GB`), log rotation (`MAX_LOG_FILES`, `MAX_LOG_AGE_DAYS`), structured JSON logging (`STRUCTURED_LOGGING`).
 - **Caching**: Configure cache expiry for wordlists and resolvers (`CACHE_MAX_AGE_DAYS`).
+- **DNS Resolver Safety**: Missing resolver files fail fast, resolver downloads use configurable retry/timeout knobs (`RESOLVER_DOWNLOAD_*`), and DNS brute/resolve timeout defaults to disabled (`DNS_*_TIMEOUT=0`) with heartbeat progress.
 - **Secrets**: Use `secrets.cfg` for local overrides or environment variables for CI/Docker (see [SECURITY.md](SECURITY.md)).
 
 **Example Configuration**:
@@ -465,6 +466,10 @@ generate_resolvers=false # Generate custom resolvers with dnsvalidator
 update_resolvers=true # Fetch and rewrite resolvers from trickest/resolvers before DNS resolution
 resolvers_url="https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
 resolvers_trusted_url="https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw/trusted_resolvers.txt"
+RESOLVER_DOWNLOAD_CONNECT_TIMEOUT=10 # Seconds to wait for resolver download TCP connection
+RESOLVER_DOWNLOAD_MAX_TIME=120 # Hard cap in seconds for resolver downloads
+RESOLVER_DOWNLOAD_RETRY=2 # Retry count for resolver downloads
+RESOLVER_DOWNLOAD_RETRY_DELAY=2 # Delay in seconds between resolver download retries
 fuzzing_remote_list="https://raw.githubusercontent.com/six2dez/OneListForAll/main/onelistforallmicro.txt" # Used to send to axiom(if used) on fuzzing
 proxy_url="http://127.0.0.1:8080/" # Proxy url
 install_golang=true # Set it to false if you already have Golang configured and ready
@@ -727,6 +732,9 @@ FFUF_MAXTIME=900                # Seconds
 HTTPX_TIMEOUT=10                # Seconds
 HTTPX_UNCOMMONPORTS_TIMEOUT=10  # Seconds
 PERMUTATIONS_LIMIT=21474836480  # Bytes, default is 20 GB
+DNS_BRUTE_TIMEOUT=0             # timeout/gtimeout duration for DNS bruteforce (0 disables hard-timeout, e.g. 4h)
+DNS_RESOLVE_TIMEOUT=0           # timeout/gtimeout duration for DNS resolve (0 disables hard-timeout, e.g. 6h)
+DNS_HEARTBEAT_INTERVAL_SECONDS=20 # Progress heartbeat interval for long DNS jobs
 
 # lists
 fuzz_wordlist=${WORDLISTS_DIR}/fuzz_wordlist.txt
@@ -816,8 +824,21 @@ byellow='\033[1;33m'
 red='\033[0;31m'
 blue='\033[0;34m'
 green='\033[0;32m'
+cyan='\033[0;36m'
 yellow='\033[0;33m'
 reset='\033[0m'
+```
+
+**DNS resolver guardrails**:
+
+- Missing/empty resolver files now fail fast before DNS brute/resolve starts.
+- Resolver downloads are configurable with `RESOLVER_DOWNLOAD_CONNECT_TIMEOUT`, `RESOLVER_DOWNLOAD_MAX_TIME`, `RESOLVER_DOWNLOAD_RETRY`, and `RESOLVER_DOWNLOAD_RETRY_DELAY`.
+- `DNS_BRUTE_TIMEOUT=0` and `DNS_RESOLVE_TIMEOUT=0` disable hard-timeout by default (recommended for very large target sets). Heartbeat progress still prints every `DNS_HEARTBEAT_INTERVAL_SECONDS`.
+
+```bash
+DNS_BRUTE_TIMEOUT=4h
+DNS_RESOLVE_TIMEOUT=6h
+DNS_HEARTBEAT_INTERVAL_SECONDS=20
 ```
 
 **Full Details**: See the [Configuration Guide](https://github.com/six2dez/reconftw/wiki/3.-Configuration-file).
