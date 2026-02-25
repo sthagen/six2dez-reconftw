@@ -208,6 +208,14 @@ _parallel_emit_job_output() {
     fi
     _PARALLEL_LAST_BADGE="$badge"
 
+    if declare -F ui_human_output_enabled >/dev/null 2>&1 && ! ui_human_output_enabled; then
+        _print_status "$badge" "$func_name" "${duration}s"
+        if [[ -n "$reason_code" ]] && declare -F ui_log_jsonl >/dev/null 2>&1; then
+            ui_log_jsonl "INFO" "$func_name" "Status reason" "status=${badge}" "reason=${reason_code}"
+        fi
+        return 0
+    fi
+
     # In quiet mode (OUTPUT_VERBOSITY==0), only show failures
     if [[ "${OUTPUT_VERBOSITY:-1}" -eq 0 ]] && [[ "$badge" != "FAIL" ]]; then
         return 0
@@ -287,11 +295,19 @@ _parallel_batch_summary() {
     local batch_end
     batch_end=$(date +%s)
     local elapsed=$((batch_end - batch_start))
+    local jsonl_enabled=false
+    if declare -F ui_is_jsonl >/dev/null 2>&1 && ui_is_jsonl; then
+        jsonl_enabled=true
+    fi
 
-    # Skip in quiet mode
-    [[ "${OUTPUT_VERBOSITY:-1}" -eq 0 ]] && return 0
-    # Skip batch envelope in summary mode at normal verbosity
-    [[ "${PARALLEL_LOG_MODE:-summary}" == "summary" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -lt 2 ]] && return 0
+    # Skip in quiet mode unless JSONL is enabled (events still useful to machines).
+    if [[ "${OUTPUT_VERBOSITY:-1}" -eq 0 ]] && [[ "$jsonl_enabled" != "true" ]]; then
+        return 0
+    fi
+    # Skip human batch envelope in summary mode at normal verbosity unless JSONL is enabled.
+    if [[ "${PARALLEL_LOG_MODE:-summary}" == "summary" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -lt 2 ]] && [[ "$jsonl_enabled" != "true" ]]; then
+        return 0
+    fi
 
     if declare -F ui_batch_end >/dev/null 2>&1; then
         ui_batch_end "$ok" "$warn" "$fail" "$elapsed" "$skip" "$cache" "$completed" "$total"
@@ -373,7 +389,8 @@ parallel_funcs() {
         if ((${#batch_pids[@]} == 0)); then
             if declare -F ui_batch_start >/dev/null 2>&1; then
                 # Skip batch envelope in summary mode at normal verbosity - individual status lines suffice
-                if [[ "$(_parallel_get_ui_mode)" != "clean" ]] && { [[ "${PARALLEL_LOG_MODE:-summary}" != "summary" ]] || [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]]; }; then
+                if { declare -F ui_is_jsonl >/dev/null 2>&1 && ui_is_jsonl; } \
+                    || { [[ "$(_parallel_get_ui_mode)" != "clean" ]] && { [[ "${PARALLEL_LOG_MODE:-summary}" != "summary" ]] || [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]]; }; }; then
                     ui_batch_start "$batch_label" "$max_jobs"
                 fi
             fi

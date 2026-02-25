@@ -189,6 +189,491 @@ SH
   grep -q "postman.new.example.com" "osint/postman_leaks.txt"
 }
 
+@test "s3buckets uses cloud_enum and writes legacy-compatible artifacts" {
+  mkdir -p subdomains .tmp
+  printf '%s\n' 'target.example.com' > subdomains/subdomains.txt
+
+  export S3BUCKETS=true
+  export CLOUD_ENUM_S3_PROFILE="optimized"
+  export CLOUD_ENUM_S3_THREADS=7
+  export ASSET_STORE=false
+  export AXIOM=false
+  export multi=""
+  export tools="$TEST_DIR/tools"
+  mkdir -p "$tools/cloud_enum/venv/bin" "$tools/cloud_enum"
+
+  printf '%s\n' '1.1.1.1' > "$TEST_DIR/resolvers.txt"
+  export resolvers="$TEST_DIR/resolvers.txt"
+
+  cat > "$MOCK_BIN/anew" <<'SH'
+#!/usr/bin/env bash
+quiet=false
+if [[ "${1:-}" == "-q" ]]; then
+  quiet=true
+  shift
+fi
+outfile="$1"
+touch "$outfile"
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  if ! grep -Fxq -- "$line" "$outfile"; then
+    printf '%s\n' "$line" >> "$outfile"
+    if [[ "$quiet" != true ]]; then
+      printf '%s\n' "$line"
+    fi
+  fi
+done
+SH
+  chmod +x "$MOCK_BIN/anew"
+
+  cat > "$MOCK_BIN/unfurl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "format" ]] && [[ "${2:-}" == "%r" ]]; then
+  while IFS= read -r line; do
+    printf '%s\n' "${line%%.*}"
+  done
+else
+  cat
+fi
+SH
+  chmod +x "$MOCK_BIN/unfurl"
+
+  cat > "$MOCK_BIN/s3scanner" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'scan-bucket'
+SH
+  chmod +x "$MOCK_BIN/s3scanner"
+
+  cat > "$MOCK_BIN/trufflehog" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_DIR/trufflehog_calls.txt"
+printf '%s\n' '{"DetectorName":"mock"}'
+SH
+  chmod +x "$MOCK_BIN/trufflehog"
+
+  cat > "$tools/cloud_enum/cloud_enum.py" <<'PY'
+print("mock")
+PY
+
+  cat > "$tools/cloud_enum/venv/bin/python3" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$TEST_DIR/cloud_enum_args.txt"
+logfile=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -l)
+      logfile="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+mkdir -p "$(dirname "$logfile")"
+cat > "$logfile" <<'JSON'
+#### CLOUD_ENUM TEST ####
+{"platform":"aws","msg":"OPEN S3 BUCKET","target":"http://demo.s3.amazonaws.com","access":"public"}
+{"platform":"gcp","msg":"OPEN GOOGLE BUCKET","target":"http://storage.googleapis.com/public-gcp","access":"public"}
+{"platform":"gcp","msg":"Protected Google Bucket","target":"http://storage.googleapis.com/protected-gcp","access":"protected"}
+JSON
+exit 0
+SH
+  chmod +x "$tools/cloud_enum/venv/bin/python3"
+
+  run s3buckets
+  [ "$status" -eq 0 ]
+  [ -s "subdomains/cloudhunter_open_buckets.txt" ]
+  grep -q '^aws/public/OPEN S3 BUCKET/http://demo.s3.amazonaws.com$' "subdomains/cloudhunter_open_buckets.txt"
+  grep -q '^gcp/public/OPEN GOOGLE BUCKET/http://storage.googleapis.com/public-gcp$' "subdomains/cloudhunter_open_buckets.txt"
+  [ -s "subdomains/cloud_assets.txt" ]
+  grep -q '^http://demo.s3.amazonaws.com$' "subdomains/cloud_assets.txt"
+  [ -s "subdomains/cloudhunter_buckets_trufflehog.txt" ]
+  grep -q -- '--bucket=demo' "$TEST_DIR/trufflehog_calls.txt"
+  grep -q -- '--project-id=public-gcp' "$TEST_DIR/trufflehog_calls.txt"
+  grep -Eq -- '(^| )-qs( |$)' "$TEST_DIR/cloud_enum_args.txt"
+  ! grep -Eq -- '(^| )-m( |$)' "$TEST_DIR/cloud_enum_args.txt"
+  ! grep -Eq -- '(^| )-b( |$)' "$TEST_DIR/cloud_enum_args.txt"
+}
+
+@test "s3buckets exhaustive profile uses cloud_enum fuzz.txt mutations" {
+  mkdir -p subdomains .tmp
+  printf '%s\n' 'target.example.com' > subdomains/subdomains.txt
+
+  export S3BUCKETS=true
+  export CLOUD_ENUM_S3_PROFILE="exhaustive"
+  export CLOUD_ENUM_S3_THREADS=7
+  export ASSET_STORE=false
+  export AXIOM=false
+  export multi=""
+  export tools="$TEST_DIR/tools"
+  mkdir -p "$tools/cloud_enum/venv/bin" "$tools/cloud_enum/enum_tools"
+  printf '%s\n' 'corp' > "$tools/cloud_enum/enum_tools/fuzz.txt"
+
+  printf '%s\n' '1.1.1.1' > "$TEST_DIR/resolvers.txt"
+  export resolvers="$TEST_DIR/resolvers.txt"
+
+  cat > "$MOCK_BIN/anew" <<'SH'
+#!/usr/bin/env bash
+quiet=false
+if [[ "${1:-}" == "-q" ]]; then
+  quiet=true
+  shift
+fi
+outfile="$1"
+touch "$outfile"
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  if ! grep -Fxq -- "$line" "$outfile"; then
+    printf '%s\n' "$line" >> "$outfile"
+    if [[ "$quiet" != true ]]; then
+      printf '%s\n' "$line"
+    fi
+  fi
+done
+SH
+  chmod +x "$MOCK_BIN/anew"
+
+  cat > "$MOCK_BIN/unfurl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "format" ]] && [[ "${2:-}" == "%r" ]]; then
+  while IFS= read -r line; do
+    printf '%s\n' "${line%%.*}"
+  done
+else
+  cat
+fi
+SH
+  chmod +x "$MOCK_BIN/unfurl"
+
+  cat > "$MOCK_BIN/s3scanner" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'scan-bucket'
+SH
+  chmod +x "$MOCK_BIN/s3scanner"
+
+  cat > "$MOCK_BIN/trufflehog" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"DetectorName":"mock"}'
+SH
+  chmod +x "$MOCK_BIN/trufflehog"
+
+  cat > "$tools/cloud_enum/cloud_enum.py" <<'PY'
+print("mock")
+PY
+
+  cat > "$tools/cloud_enum/venv/bin/python3" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$TEST_DIR/cloud_enum_args_exhaustive.txt"
+logfile=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -l)
+      logfile="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+mkdir -p "$(dirname "$logfile")"
+cat > "$logfile" <<'JSON'
+{"platform":"aws","msg":"OPEN S3 BUCKET","target":"http://demo.s3.amazonaws.com","access":"public"}
+JSON
+exit 0
+SH
+  chmod +x "$tools/cloud_enum/venv/bin/python3"
+
+  run s3buckets
+  [ "$status" -eq 0 ]
+  grep -Fq -- "-m $tools/cloud_enum/enum_tools/fuzz.txt" "$TEST_DIR/cloud_enum_args_exhaustive.txt"
+  ! grep -Eq -- '(^| )-qs( |$)' "$TEST_DIR/cloud_enum_args_exhaustive.txt"
+  ! grep -Eq -- '(^| )-b( |$)' "$TEST_DIR/cloud_enum_args_exhaustive.txt"
+}
+
+@test "s3buckets continues with s3scanner when cloud_enum fails" {
+  mkdir -p subdomains .tmp
+  printf '%s\n' 'target.example.com' > subdomains/subdomains.txt
+
+  export S3BUCKETS=true
+  export CLOUD_ENUM_S3_PROFILE="optimized"
+  export CLOUD_ENUM_S3_THREADS=7
+  export ASSET_STORE=false
+  export AXIOM=false
+  export tools="$TEST_DIR/tools"
+  mkdir -p "$tools/cloud_enum/venv/bin" "$tools/cloud_enum"
+
+  printf '%s\n' '1.1.1.1' > "$TEST_DIR/resolvers.txt"
+  export resolvers="$TEST_DIR/resolvers.txt"
+
+  cat > "$MOCK_BIN/anew" <<'SH'
+#!/usr/bin/env bash
+quiet=false
+if [[ "${1:-}" == "-q" ]]; then
+  quiet=true
+  shift
+fi
+outfile="$1"
+touch "$outfile"
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  if ! grep -Fxq -- "$line" "$outfile"; then
+    printf '%s\n' "$line" >> "$outfile"
+    if [[ "$quiet" != true ]]; then
+      printf '%s\n' "$line"
+    fi
+  fi
+done
+SH
+  chmod +x "$MOCK_BIN/anew"
+
+  cat > "$MOCK_BIN/unfurl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "format" ]] && [[ "${2:-}" == "%r" ]]; then
+  while IFS= read -r line; do
+    printf '%s\n' "${line%%.*}"
+  done
+else
+  cat
+fi
+SH
+  chmod +x "$MOCK_BIN/unfurl"
+
+  cat > "$MOCK_BIN/s3scanner" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' 'scan-bucket-fallback'
+SH
+  chmod +x "$MOCK_BIN/s3scanner"
+
+  cat > "$MOCK_BIN/trufflehog" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' '{"DetectorName":"mock"}'
+SH
+  chmod +x "$MOCK_BIN/trufflehog"
+
+  cat > "$tools/cloud_enum/cloud_enum.py" <<'PY'
+print("mock")
+PY
+
+  cat > "$tools/cloud_enum/venv/bin/python3" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+  chmod +x "$tools/cloud_enum/venv/bin/python3"
+
+  run s3buckets
+  [ "$status" -eq 0 ]
+  [ -f "subdomains/cloudhunter_open_buckets.txt" ]
+  [ ! -s "subdomains/cloudhunter_open_buckets.txt" ]
+  [ -s "subdomains/s3buckets.txt" ]
+  grep -q '^scan-bucket-fallback$' "subdomains/s3buckets.txt"
+}
+
+@test "cloud_enum_scan uses local cloud_enum runtime with optimized quickscan flags" {
+  mkdir -p osint
+  export OSINT=true
+  export CLOUD_ENUM=true
+  export ASSET_STORE=false
+  export tools="$TEST_DIR/tools"
+  mkdir -p "$tools/cloud_enum/venv/bin" "$tools/cloud_enum"
+
+  printf '%s\n' '1.1.1.1' > "$TEST_DIR/resolvers.txt"
+  export resolvers="$TEST_DIR/resolvers.txt"
+
+  cat > "$MOCK_BIN/anew" <<'SH'
+#!/usr/bin/env bash
+quiet=false
+if [[ "${1:-}" == "-q" ]]; then
+  quiet=true
+  shift
+fi
+outfile="$1"
+touch "$outfile"
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  if ! grep -Fxq -- "$line" "$outfile"; then
+    printf '%s\n' "$line" >> "$outfile"
+    if [[ "$quiet" != true ]]; then
+      printf '%s\n' "$line"
+    fi
+  fi
+done
+SH
+  chmod +x "$MOCK_BIN/anew"
+
+  cat > "$MOCK_BIN/unfurl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "format" ]] && [[ "${2:-}" == "%r" ]]; then
+  while IFS= read -r line; do
+    printf '%s\n' "${line%%.*}"
+  done
+else
+  cat
+fi
+SH
+  chmod +x "$MOCK_BIN/unfurl"
+
+  cat > "$tools/cloud_enum/cloud_enum.py" <<'PY'
+print("mock")
+PY
+
+  cat > "$tools/cloud_enum/venv/bin/python3" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$TEST_DIR/cloud_enum_scan_args.txt"
+printf '%s\n' 'OPEN S3 BUCKET: http://demo.s3.amazonaws.com'
+exit 0
+SH
+  chmod +x "$tools/cloud_enum/venv/bin/python3"
+
+  run cloud_enum_scan
+  [ "$status" -eq 0 ]
+  [ -s "osint/cloud_enum.txt" ]
+  grep -q 'OPEN S3 BUCKET' "osint/cloud_enum.txt"
+  grep -q -- 'cloud_enum.py' "$TEST_DIR/cloud_enum_scan_args.txt"
+  grep -Eq -- '(^| )-qs( |$)' "$TEST_DIR/cloud_enum_scan_args.txt"
+  ! grep -Eq -- '(^| )-m( |$)' "$TEST_DIR/cloud_enum_scan_args.txt"
+  ! grep -Eq -- '(^| )-b( |$)' "$TEST_DIR/cloud_enum_scan_args.txt"
+}
+
+@test "cloud_enum_scan exhaustive profile uses local fuzz mutations file" {
+  mkdir -p osint
+  export OSINT=true
+  export CLOUD_ENUM=true
+  export ASSET_STORE=false
+  export CLOUD_ENUM_S3_PROFILE="exhaustive"
+  export tools="$TEST_DIR/tools"
+  mkdir -p "$tools/cloud_enum/venv/bin" "$tools/cloud_enum/enum_tools"
+  printf '%s\n' 'corp' > "$tools/cloud_enum/enum_tools/fuzz.txt"
+
+  printf '%s\n' '1.1.1.1' > "$TEST_DIR/resolvers.txt"
+  export resolvers="$TEST_DIR/resolvers.txt"
+
+  cat > "$MOCK_BIN/anew" <<'SH'
+#!/usr/bin/env bash
+quiet=false
+if [[ "${1:-}" == "-q" ]]; then
+  quiet=true
+  shift
+fi
+outfile="$1"
+touch "$outfile"
+while IFS= read -r line; do
+  [[ -z "$line" ]] && continue
+  if ! grep -Fxq -- "$line" "$outfile"; then
+    printf '%s\n' "$line" >> "$outfile"
+    if [[ "$quiet" != true ]]; then
+      printf '%s\n' "$line"
+    fi
+  fi
+done
+SH
+  chmod +x "$MOCK_BIN/anew"
+
+  cat > "$MOCK_BIN/unfurl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "format" ]] && [[ "${2:-}" == "%r" ]]; then
+  while IFS= read -r line; do
+    printf '%s\n' "${line%%.*}"
+  done
+else
+  cat
+fi
+SH
+  chmod +x "$MOCK_BIN/unfurl"
+
+  cat > "$tools/cloud_enum/cloud_enum.py" <<'PY'
+print("mock")
+PY
+
+  cat > "$tools/cloud_enum/venv/bin/python3" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$TEST_DIR/cloud_enum_scan_exhaustive_args.txt"
+printf '%s\n' 'OPEN S3 BUCKET: http://demo.s3.amazonaws.com'
+exit 0
+SH
+  chmod +x "$tools/cloud_enum/venv/bin/python3"
+
+  run cloud_enum_scan
+  [ "$status" -eq 0 ]
+  [ -s "osint/cloud_enum.txt" ]
+  grep -q 'OPEN S3 BUCKET' "osint/cloud_enum.txt"
+  grep -Fq -- "-m $tools/cloud_enum/enum_tools/fuzz.txt" "$TEST_DIR/cloud_enum_scan_exhaustive_args.txt"
+  ! grep -Eq -- '(^| )-qs( |$)' "$TEST_DIR/cloud_enum_scan_exhaustive_args.txt"
+  ! grep -Eq -- '(^| )-b( |$)' "$TEST_DIR/cloud_enum_scan_exhaustive_args.txt"
+}
+
+@test "cloud_enum_scan exhaustive skips cleanly when fuzz file is missing" {
+  mkdir -p osint
+  export OSINT=true
+  export CLOUD_ENUM=true
+  export ASSET_STORE=false
+  export CLOUD_ENUM_S3_PROFILE="exhaustive"
+  export tools="$TEST_DIR/tools"
+  mkdir -p "$tools/cloud_enum/venv/bin" "$tools/cloud_enum"
+
+  printf '%s\n' '1.1.1.1' > "$TEST_DIR/resolvers.txt"
+  export resolvers="$TEST_DIR/resolvers.txt"
+
+  cat > "$MOCK_BIN/unfurl" <<'SH'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "format" ]] && [[ "${2:-}" == "%r" ]]; then
+  while IFS= read -r line; do
+    printf '%s\n' "${line%%.*}"
+  done
+else
+  cat
+fi
+SH
+  chmod +x "$MOCK_BIN/unfurl"
+
+  cat > "$tools/cloud_enum/cloud_enum.py" <<'PY'
+print("mock")
+PY
+
+  cat > "$tools/cloud_enum/venv/bin/python3" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$TEST_DIR/cloud_enum_scan_missing_fuzz_args.txt"
+exit 0
+SH
+  chmod +x "$tools/cloud_enum/venv/bin/python3"
+
+  run cloud_enum_scan
+  [ "$status" -eq 0 ]
+  grep -q "mutations list not found" <<<"$output"
+  [ ! -f "$TEST_DIR/cloud_enum_scan_missing_fuzz_args.txt" ]
+  [ ! -s "osint/cloud_enum.txt" ]
+}
+
+@test "multi_osint executes cloud_enum_scan for each target" {
+  export multi="multi-osint-test"
+  export list="$TEST_DIR/targets.txt"
+  printf '%s\n' 'one.example.com' 'two.example.com' > "$list"
+  export SCRIPTPATH="$TEST_DIR"
+
+  domain_info() { :; }
+  ip_info() { :; }
+  emails() { :; }
+  google_dorks() { :; }
+  github_repos() { :; }
+  github_leaks() { :; }
+  metadata() { :; }
+  apileaks() { :; }
+  third_party_misconfigs() { :; }
+  zonetransfer() { :; }
+  cloud_enum_scan() { printf '%s\n' "$domain" >> "$TEST_DIR/cloud_enum_scan_calls.txt"; }
+  init_dns_resolver() { :; }
+  enable_command_trace() { :; }
+  end() { :; }
+
+  run multi_osint
+  [ "$status" -eq 0 ]
+  [ -s "$TEST_DIR/cloud_enum_scan_calls.txt" ]
+  [ "$(wc -l < "$TEST_DIR/cloud_enum_scan_calls.txt")" -eq 2 ]
+  grep -q '^one.example.com$' "$TEST_DIR/cloud_enum_scan_calls.txt"
+  grep -q '^two.example.com$' "$TEST_DIR/cloud_enum_scan_calls.txt"
+}
+
 @test "nuclei_dast is forced on when VULNS_GENERAL=true" {
   mkdir -p webs .tmp gf vulns nuclei_output
   printf 'https://target.example.com\n' > webs/webs_all.txt

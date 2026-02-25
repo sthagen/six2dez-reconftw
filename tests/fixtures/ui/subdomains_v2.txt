@@ -1,0 +1,26 @@
+────────────────────────────────────────────────────────────────────────────────
+reconftw test-v0 by @six2dez | Authorized testing only
+────────────────────────────────────────────────────────────────────────────────
+Mode: SUBDOMAINS | Target: example.com | Profile: default | Parallel: true | ...
+Output: /tmp/recon
+Network: behind_nat=no | DNS: dnsx
+System: PERF_PROFILE=balanced | cores=8 mem=16GB | Disk space OK: 10GB availa...
+Started: <TS>
+
+
+── SUBDOMAINS ───────────────────────────────────────────────────────────────
+Started: <TS>
+OK    subdomains_full                              0s
+[INFO] verbose_marker
+  Output: subdomains/, webs/
+
+Completed: <TS>
+
+RESULTS  example.com
+Mode: SUBDOMAINS
+Subdomains: 1
+Web hosts: 0
+Findings: C 0 | H 0 | M 0 | L 0 | I 0
+Duration: 1m 00s
+Output: /tmp/recon
+

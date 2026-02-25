@@ -202,6 +202,7 @@ _subdomains_init() {
 
     # Escape domain for safe use in grep regex (dots are literal, not wildcards)
     DOMAIN_ESCAPED=$(escape_domain_regex "$domain")
+    DOMAIN_MATCH_REGEX=$(domain_match_regex "$domain")
 
     # Check for sensitive domain exclusion
     if [[ "${EXCLUDE_SENSITIVE:-false}" == true ]]; then
@@ -476,7 +477,7 @@ function sub_asn() {
                     jq -r '.domains[]? // empty' "$asn_json" \
                         | sed '/^$/d' \
                         | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
-                        | grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" \
+                        | grep -E "$DOMAIN_MATCH_REGEX" \
                         | sort -u \
                         | anew -q .tmp/subs_no_resolved.txt || true
                     if [[ -s .tmp/subs_no_resolved.txt ]]; then
@@ -694,17 +695,23 @@ function sub_active() {
         fi
 
         # Process subdomains and append new ones to subdomains.txt, count new lines
+        local candidate_count=0
+        local matched_count=0
         if [[ -s ".tmp/subdomains_tmp.txt" ]]; then
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/subdomains_tmp.txt 2>>"$LOGFILE" \
+            candidate_count=$(wc -l <.tmp/subdomains_tmp.txt 2>/dev/null | tr -d ' ')
+            matched_count=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subdomains_tmp.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
-                | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l); then
-                print_warnf "Failed to process subdomains."
-                NUMOFLINES=0
-            fi
+                | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subdomains_tmp.txt 2>>"$LOGFILE" \
+                | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
+                | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            [[ "$matched_count" =~ ^[0-9]+$ ]] || matched_count=0
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
             _print_msg WARN "No candidate subdomains produced by sub_active; continuing."
         fi
+        log_note "sub_active counts: candidates=${candidate_count:-0} matched=${matched_count:-0} added=${NUMOFLINES:-0}" "${FUNCNAME[0]}" "${LINENO}"
 
         end_subfunc "${NUMOFLINES} subs DNS resolved from passive" "${FUNCNAME[0]}"
     else
@@ -748,7 +755,7 @@ function sub_tls() {
         fi
 
         if [[ -s ".tmp/subdomains_tlsx.txt" ]]; then
-            grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/subdomains_tlsx.txt \
+            grep -E "$DOMAIN_MATCH_REGEX" .tmp/subdomains_tlsx.txt \
                 | grep -aEo 'https?://[^ ]+' \
                 | sed "s/|__ //" \
                 | sed '/^$/d' \
@@ -779,10 +786,8 @@ function sub_tls() {
 
         touch .tmp/subdomains_tlsx_resolved.txt
 
-        if ! NUMOFLINES=$(anew subdomains/subdomains.txt <.tmp/subdomains_tlsx_resolved.txt | sed '/^$/d' | wc -l); then
-            print_warnf "Counting new subdomains failed."
-            return 1
-        fi
+        NUMOFLINES=$(anew subdomains/subdomains.txt <.tmp/subdomains_tlsx_resolved.txt | sed '/^$/d' | wc -l | tr -d ' ' || true)
+        [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
 
         end_subfunc "${NUMOFLINES} new subs (tls active enum)" "${FUNCNAME[0]}"
     else
@@ -824,12 +829,10 @@ function sub_noerror() {
             fi
 
             # Process subdomains and append new ones to subdomains.txt, count new lines
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/subs_noerror.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subs_noerror.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
-                | sed 's/^\*\.//' | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l); then
-                print_warnf "Failed to process subdomains."
-                return 1
-            fi
+                | sed 's/^\*\.//' | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
 
             end_subfunc "${NUMOFLINES} new subs (DNS noerror)" "${FUNCNAME[0]}"
 
@@ -866,7 +869,7 @@ function sub_dns() {
 
             jq -r '.. | strings | select(test("^(\\d{1,3}\\.){3}\\d{1,3}$|^[0-9a-fA-F:]+$"))' <"subdomains/subdomains_dnsregs.json" \
                 | sort -u | run_command hakip2host | awk '{print $3}' | unfurl -u domains \
-                | sed -e 's/^\*\.//' -e 's/\.$//' -e '/\./!d' | grep "\.${DOMAIN_ESCAPED}$" \
+                | sed -e 's/^\*\.//' -e 's/\.$//' -e '/\./!d' | grep -E "$DOMAIN_MATCH_REGEX" \
                 | grep -E '^([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}$' | sort -u \
                 | anew -q .tmp/subdomains_dns.txt || true
 
@@ -875,7 +878,7 @@ function sub_dns() {
                 | while IFS= read -r ip; do
                     [[ -z "$ip" ]] && continue
                     run_command curl -s "https://ip.thc.org/$ip" 2>>"$LOGFILE" \
-                        | grep "\.${DOMAIN_ESCAPED}$" \
+                        | grep -E "$DOMAIN_MATCH_REGEX" \
                         | grep -E '^([a-zA-Z0-9][-a-zA-Z0-9]*\.)+[a-zA-Z]{2,}$' \
                         | sort -u \
                         | anew -q .tmp/subdomains_dns.txt || true
@@ -916,12 +919,10 @@ function sub_dns() {
         fi
 
         if [[ -s ".tmp/subdomains_dns_resolved.txt" ]]; then
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/subdomains_dns_resolved.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subdomains_dns_resolved.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\-\.]+\.)+[a-zA-Z]{1,}$' \
-                | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l); then
-                print_warnf "Failed to count new subdomains."
-                return 1
-            fi
+                | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
             _print_msg WARN "No DNS-resolved subdomains produced by sub_dns; continuing."
@@ -982,17 +983,23 @@ function sub_brute() {
         fi
 
         # Process subdomains and append new ones to subdomains.txt, count new lines
+        local brute_candidate_count=0
+        local brute_matched_count=0
         if [[ -s ".tmp/subs_brute_valid.txt" ]]; then
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/subs_brute_valid.txt 2>>"$LOGFILE" \
+            brute_candidate_count=$(wc -l <.tmp/subs_brute_valid.txt 2>/dev/null | tr -d ' ')
+            brute_matched_count=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subs_brute_valid.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
-                | sed 's/^\*\.//' | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l); then
-                print_warnf "Failed to process subdomains."
-                NUMOFLINES=0
-            fi
+                | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subs_brute_valid.txt 2>>"$LOGFILE" \
+                | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
+                | sed 's/^\*\.//' | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            [[ "$brute_matched_count" =~ ^[0-9]+$ ]] || brute_matched_count=0
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
             _print_msg WARN "No candidate subdomains produced by sub_brute; continuing."
         fi
+        log_note "sub_brute counts: candidates=${brute_candidate_count:-0} matched=${brute_matched_count:-0} added=${NUMOFLINES:-0}" "${FUNCNAME[0]}" "${LINENO}"
 
         end_subfunc "${NUMOFLINES} new subs (bruteforce)" "${FUNCNAME[0]}"
 
@@ -1119,7 +1126,7 @@ function sub_scraping() {
 
                 if [[ -s ".tmp/scrap_subs_resolved.txt" ]]; then
                     if ! NUMOFLINES=$(cat .tmp/scrap_subs_resolved.txt 2>>"$LOGFILE" \
-                        | grep -a "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" \
+                        | grep -aE "$DOMAIN_MATCH_REGEX" \
                         | grep -Ea '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
                         | anew subdomains/subdomains.txt \
                         | tee .tmp/diff_scrap.txt \
@@ -1206,7 +1213,7 @@ function sub_analytics() {
             fi
 
             if [[ -s ".tmp/analytics_subs_tmp.txt" ]]; then
-                grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/analytics_subs_tmp.txt \
+                grep -E "$DOMAIN_MATCH_REGEX" .tmp/analytics_subs_tmp.txt \
                     | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
                     | sed "s/|__ //" | anew -q .tmp/analytics_subs_clean.txt || true
 
@@ -1381,12 +1388,10 @@ function sub_permut() {
             fi
 
             # Process subdomains and append new ones to subdomains.txt, count new lines
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/permute_subs.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/permute_subs.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
-                | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l); then
-                print_warnf "Failed to process subdomains."
-                return 1
-            fi
+                | anew subdomains/subdomains.txt | sed '/^$/d' | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
         fi
@@ -1467,13 +1472,12 @@ function sub_regex_permut() {
                 fi
             fi
 
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/regulator.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/regulator.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
                 | anew subdomains/subdomains.txt \
                 | sed '/^$/d' \
-                | wc -l); then
-                NUMOFLINES=0
-            fi
+                | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
         fi
@@ -1502,6 +1506,15 @@ function sub_ia_permut() {
     if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $SUBIAPERMUTE == true ]]; then
         start_subfunc "${FUNCNAME[0]}" "Running: Permutations by AI analysis"
 
+        if [[ ! -s "subdomains/subdomains.txt" ]]; then
+            NUMOFLINES=0
+            log_note "sub_ia_permut skipped: reason=no_seed_subdomains" "${FUNCNAME[0]}" "${LINENO}"
+            end_subfunc "0 new subs (permutations by IA)" "${FUNCNAME[0]}" "SKIP"
+            return 0
+        fi
+
+        : >.tmp/subwiz.txt
+        : >.tmp/subwiz_resolved.txt
         subwiz -i subdomains/subdomains.txt --no-resolve -o .tmp/subwiz.txt 2>>"$LOGFILE" >/dev/null
 
         # Resolve the generated domains
@@ -1535,13 +1548,12 @@ function sub_ia_permut() {
                 fi
             fi
 
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/subwiz_resolved.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/subwiz_resolved.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
                 | anew subdomains/subdomains.txt \
                 | sed '/^$/d' \
-                | wc -l); then
-                NUMOFLINES=0
-            fi
+                | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
         fi
@@ -1624,13 +1636,12 @@ function sub_recursive_passive() {
         fi
 
         if [[ -s ".tmp/passive_recurs_tmp.txt" ]]; then
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/passive_recurs_tmp.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/passive_recurs_tmp.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
                 | sed '/^$/d' \
                 | anew subdomains/subdomains.txt \
-                | wc -l); then
-                NUMOFLINES=0
-            fi
+                | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
         fi
@@ -1771,13 +1782,12 @@ function sub_recursive_brute() {
 
         # Process final results
         if [[ -s ".tmp/brute_perm_recursive_final.txt" ]]; then
-            if ! NUMOFLINES=$(grep "\.${DOMAIN_ESCAPED}$\|^${DOMAIN_ESCAPED}$" .tmp/brute_perm_recursive_final.txt 2>>"$LOGFILE" \
+            NUMOFLINES=$(grep -E "$DOMAIN_MATCH_REGEX" .tmp/brute_perm_recursive_final.txt 2>>"$LOGFILE" \
                 | grep -E '^([a-zA-Z0-9\.\-]+\.)+[a-zA-Z]{1,}$' \
                 | sed '/^$/d' \
                 | anew subdomains/subdomains.txt \
-                | wc -l); then
-                NUMOFLINES=0
-            fi
+                | wc -l | tr -d ' ' || true)
+            [[ "$NUMOFLINES" =~ ^[0-9]+$ ]] || NUMOFLINES=0
         else
             NUMOFLINES=0
         fi
@@ -1817,7 +1827,7 @@ function subtakeover() {
             fi
         fi
         if ! command -v dnstake >/dev/null 2>&1; then
-            _print_msg WARN "${FUNCNAME[0]}: dnstake binary not found in PATH - install dnstake first"
+            warn_once "missing-tool-dnstake" "${FUNCNAME[0]}: dnstake binary not found in PATH - install dnstake first" || true
             return 0
         fi
         start_func "${FUNCNAME[0]}" "Looking for possible subdomain and DNS takeover"
@@ -1951,8 +1961,8 @@ function s3buckets() {
 
     # Check if the function should run
     if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $S3BUCKETS == true ]] && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        start_func "${FUNCNAME[0]}" "AWS S3 buckets search"
-        print_notice RUN "s3buckets" "scanning S3 buckets"
+        start_func "${FUNCNAME[0]}" "S3 and cloud buckets search"
+        print_notice RUN "s3buckets" "scanning S3 and cloud buckets"
 
         # If in multi mode and subdomains.txt doesn't exist, create it
         if [[ -n $multi ]] && [[ ! -f "$dir/subdomains/subdomains.txt" ]]; then
@@ -1984,101 +1994,113 @@ function s3buckets() {
             fi
         fi
 
-        # Initialize the output file in the subdomains folder
+        # Initialize cloud enumeration artifacts (legacy filenames kept for compatibility)
         if ! : >subdomains/cloudhunter_open_buckets.txt; then
             print_warnf "Failed to initialize cloudhunter_open_buckets.txt."
         fi
+        if ! : >subdomains/.cloud_enum_s3.jsonl; then
+            print_warnf "Failed to initialize .cloud_enum_s3.jsonl."
+        fi
+        rm -f .tmp/cloud_enum_s3_legacy.txt .tmp/cloud_enum_public_aws_targets.txt .tmp/cloud_enum_public_gcp_targets.txt 2>/dev/null || true
 
-        # Determine the CloudHunter permutations flag based on the config
-        PERMUTATION_FLAG=""
-        permutation_file=""
-        case "$CLOUDHUNTER_PERMUTATION" in
-            DEEP)
-                permutation_file="$tools/CloudHunter/permutations-big.txt"
+        local cloud_enum_profile cloud_enum_threads cloud_enum_mutations cloud_enum_quickscan
+        local cloud_enum_python cloud_enum_script cloud_enum_status cloud_enum_rc company_name
+        cloud_enum_profile=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
+        cloud_enum_threads="${CLOUD_ENUM_S3_THREADS:-20}"
+        if [[ ! "$cloud_enum_threads" =~ ^[0-9]+$ ]] || [[ "$cloud_enum_threads" -le 0 ]]; then
+            _print_msg WARN "Invalid CLOUD_ENUM_S3_THREADS (${cloud_enum_threads}); using default 20."
+            cloud_enum_threads=20
+        fi
+
+        case "$cloud_enum_profile" in
+            optimized)
+                cloud_enum_mutations=""
+                cloud_enum_quickscan=true
                 ;;
-            NORMAL)
-                permutation_file="$tools/CloudHunter/permutations.txt"
-                ;;
-            NONE)
-                permutation_file=""
+            exhaustive)
+                cloud_enum_mutations="${tools}/cloud_enum/enum_tools/fuzz.txt"
+                cloud_enum_quickscan=false
                 ;;
             *)
-                print_warnf "Invalid value for CLOUDHUNTER_PERMUTATION: %s." "$CLOUDHUNTER_PERMUTATION"
-                return 1
+                _print_msg WARN "Invalid CLOUD_ENUM_S3_PROFILE (${cloud_enum_profile}); using optimized."
+                cloud_enum_profile="optimized"
+                cloud_enum_mutations=""
+                cloud_enum_quickscan=true
                 ;;
         esac
 
-        if [[ -n "$permutation_file" ]]; then
-            if [[ -f "$permutation_file" ]]; then
-                PERMUTATION_FLAG="-p"
-            else
-                _print_msg WARN "CloudHunter permutations file not found (${permutation_file}); continuing without permutations."
-                log_note "CloudHunter permutations file not found (${permutation_file}); continuing without permutations." "${FUNCNAME[0]}" "${LINENO}"
-                permutation_file=""
-                PERMUTATION_FLAG=""
-            fi
-        fi
-
-        # Debug: Print the full CloudHunter command
-        #printf "CloudHunter command: %s/venv/bin/python3 %s/cloudhunter.py %s -r %s/resolvers.txt -t 50 [URL]\n" "$tools/CloudHunter" "$tools/CloudHunter" "$PERMUTATION_FLAG" "$tools/CloudHunter" >>"$LOGFILE"
-
-        # Debug: Check if files exist
-        if [[ -f "$tools/CloudHunter/cloudhunter.py" ]]; then
-            printf "cloudhunter.py exists\n" >>"$LOGFILE"
-        else
-            printf "cloudhunter.py not found\n" >>"$LOGFILE"
-        fi
-
-        if [[ -n $permutation_file ]]; then
-            if [[ -f $permutation_file ]]; then
-                printf "Permutations file exists\n" >>"$LOGFILE"
-            else
-                printf "Permutations file not found: %s\n" "$permutation_file" >>"$LOGFILE"
-            fi
-        fi
-
-        if [[ -f "$tools/CloudHunter/resolvers.txt" ]]; then
-            printf "resolvers.txt exists\n" >>"$LOGFILE"
-        else
-            printf "resolvers.txt not found\n" >>"$LOGFILE"
-        fi
-
+        cloud_enum_python="${tools}/cloud_enum/venv/bin/python3"
+        cloud_enum_script="${tools}/cloud_enum/cloud_enum.py"
         printf "Processing domain: %s\n" "$domain" >>"$LOGFILE"
-        print_notice RUN "cloudhunter" "enumerating cloud buckets (CloudHunter)"
-        start_subfunc "cloudhunter" "enumerating cloud buckets (CloudHunter)"
-        local cloudhunter_status="OK"
-        local cloudhunter_rc=0
-        local cloudhunter_prev_dir
-        cloudhunter_prev_dir="$(pwd)"
-        if cd "$tools/CloudHunter"; then
-            if [[ -n "$permutation_file" ]]; then
-                run_command env PYTHONWARNINGS=ignore "${tools}/CloudHunter/venv/bin/python3" -W ignore ./cloudhunter.py \
-                    "$PERMUTATION_FLAG" "$permutation_file" -r ./resolvers.txt -t 50 "$domain" \
-                    >>"$dir/subdomains/cloudhunter_open_buckets.txt" 2>>"$LOGFILE" || cloudhunter_rc=$?
-            else
-                run_command env PYTHONWARNINGS=ignore "${tools}/CloudHunter/venv/bin/python3" -W ignore ./cloudhunter.py \
-                    -r ./resolvers.txt -t 50 "$domain" \
-                    >>"$dir/subdomains/cloudhunter_open_buckets.txt" 2>>"$LOGFILE" || cloudhunter_rc=$?
-            fi
+        print_notice RUN "cloud_enum" "enumerating cloud buckets (cloud_enum)"
+        start_subfunc "cloud_enum" "enumerating cloud buckets (cloud_enum)"
+        cloud_enum_status="OK"
+        cloud_enum_rc=0
+
+        if [[ ! -f "$cloud_enum_script" ]] || [[ ! -x "$cloud_enum_python" ]]; then
+            _print_msg WARN "cloud_enum runtime missing in ${tools}/cloud_enum; skipping cloud enumeration."
+            cloud_enum_status="WARN"
+            cloud_enum_rc=1
+        elif [[ "$cloud_enum_quickscan" != true ]] && [[ ! -f "$cloud_enum_mutations" ]]; then
+            _print_msg WARN "cloud_enum mutations file not found (${cloud_enum_mutations}); skipping cloud enumeration."
+            cloud_enum_status="WARN"
+            cloud_enum_rc=1
         else
-            print_warnf "Failed to cd to %s." "$tools/CloudHunter"
-            cloudhunter_rc=1
-        fi
-        cd "$cloudhunter_prev_dir" 2>/dev/null || true
+            company_name=$(unfurl format %r <<<"$domain")
+            local -a cloud_enum_cmd=(
+                env PYTHONWARNINGS=ignore
+                "$cloud_enum_python"
+                "$cloud_enum_script"
+                -k "$company_name"
+                -k "$domain"
+                -k "${domain%%.*}"
+                -t "$cloud_enum_threads"
+                -f json
+                -l "$dir/subdomains/.cloud_enum_s3.jsonl"
+            )
+            if [[ -f "$resolvers" ]]; then
+                cloud_enum_cmd+=(-nsf "$resolvers")
+            fi
+            if [[ "$cloud_enum_quickscan" == true ]]; then
+                cloud_enum_cmd+=(-qs)
+            else
+                cloud_enum_cmd+=(-m "$cloud_enum_mutations")
+            fi
 
-        if [[ $cloudhunter_rc -ne 0 ]]; then
-            cloudhunter_status="WARN"
-            print_warnf "CloudHunter command failed for domain %s (exit %s)." "$domain" "$cloudhunter_rc"
-            log_note "CloudHunter command failed for domain ${domain} (exit ${cloudhunter_rc})." "${FUNCNAME[0]}" "${LINENO}"
+            run_command "${cloud_enum_cmd[@]}" >>"$LOGFILE" 2>>"$LOGFILE" || cloud_enum_rc=$?
+            if [[ $cloud_enum_rc -ne 0 ]]; then
+                cloud_enum_status="WARN"
+                print_warnf "cloud_enum command failed for domain %s (exit %s)." "$domain" "$cloud_enum_rc"
+                log_note "cloud_enum command failed for domain ${domain} (exit ${cloud_enum_rc})." "${FUNCNAME[0]}" "${LINENO}"
+            fi
         fi
-        end_subfunc "cloudhunter done" "cloudhunter" "$cloudhunter_status"
+        end_subfunc "cloud_enum done" "cloud_enum" "$cloud_enum_status"
 
-        # Process CloudHunter results
-        if [[ -s "subdomains/cloudhunter_open_buckets.txt" ]]; then
-            if ! NUMOFLINES1=$(cat subdomains/cloudhunter_open_buckets.txt 2>>"$LOGFILE" | anew subdomains/cloud_assets.txt | wc -l); then
-                print_warnf "Failed to process cloudhunter_open_buckets.txt."
+        # Process cloud_enum JSON results into legacy-compatible artifacts
+        if [[ -s "subdomains/.cloud_enum_s3.jsonl" ]]; then
+            if ! jq -Rr '
+                fromjson?
+                | select(type == "object")
+                | select((.platform | type) == "string" and (.access | type) == "string" and (.msg | type) == "string" and (.target | type) == "string")
+                | "\(.platform)/\(.access)/\(.msg)/\(.target)"
+            ' subdomains/.cloud_enum_s3.jsonl 2>>"$LOGFILE" | sort -u >.tmp/cloud_enum_s3_legacy.txt; then
+                print_warnf "Failed to normalize cloud_enum JSON output."
+            fi
+
+            if [[ -s ".tmp/cloud_enum_s3_legacy.txt" ]]; then
+                cat .tmp/cloud_enum_s3_legacy.txt >subdomains/cloudhunter_open_buckets.txt
+            fi
+
+            if ! NUMOFLINES1=$(jq -Rr '
+                fromjson?
+                | select(type == "object")
+                | select((.target | type) == "string" and (.target | length) > 0)
+                | .target
+            ' subdomains/.cloud_enum_s3.jsonl 2>>"$LOGFILE" | sort -u | anew subdomains/cloud_assets.txt | wc -l); then
+                print_warnf "Failed to process cloud_enum JSON output."
                 NUMOFLINES1=0
             fi
+
             if [[ $NUMOFLINES1 -gt 0 ]]; then
                 notification "${NUMOFLINES1} new cloud assets found" "info"
             fi
@@ -2106,26 +2128,66 @@ function s3buckets() {
             done <subdomains/s3buckets.txt
         fi
 
-        # Run trufflehog for open buckets found by CloudHunter
-        if [[ -s "subdomains/cloudhunter_open_buckets.txt" ]]; then
-            while IFS= read -r line; do
-                if echo "$line" | grep -q "Aws Cloud"; then
-                    # AWS S3 Bucket
-                    bucket_name=$(echo "$line" | awk '{print $3}')
-                    run_command trufflehog s3 --bucket="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloudhunter_buckets_trufflehog.txt
-                elif echo "$line" | grep -q "Google Cloud"; then
-                    # Google Cloud Storage
-                    bucket_name=$(echo "$line" | awk '{print $3}')
-                    run_command trufflehog gcs --project-id="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloudhunter_buckets_trufflehog.txt
-                fi
-            done <subdomains/cloudhunter_open_buckets.txt
+        # Run trufflehog for public buckets found by cloud_enum
+        if [[ -s "subdomains/.cloud_enum_s3.jsonl" ]]; then
+            jq -Rr '
+                fromjson?
+                | select(type == "object")
+                | select((.platform | type) == "string" and (.access | type) == "string" and (.msg | type) == "string" and (.target | type) == "string")
+                | select(.platform == "aws" and .access == "public" and (.msg | ascii_upcase | contains("S3 BUCKET")))
+                | .target
+            ' subdomains/.cloud_enum_s3.jsonl 2>>"$LOGFILE" | sort -u >.tmp/cloud_enum_public_aws_targets.txt || true
+
+            if [[ -s ".tmp/cloud_enum_public_aws_targets.txt" ]]; then
+                while IFS= read -r target; do
+                    local bucket_host bucket_name
+                    bucket_host="${target#http://}"
+                    bucket_host="${bucket_host#https://}"
+                    bucket_host="${bucket_host%%/*}"
+                    bucket_name=""
+                    if [[ "$bucket_host" =~ ^([^.]+)\.s3([.-][^.]+)?\.amazonaws\.com$ ]]; then
+                        bucket_name="${BASH_REMATCH[1]}"
+                    fi
+                    if [[ -n "$bucket_name" ]]; then
+                        run_command trufflehog s3 --bucket="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloudhunter_buckets_trufflehog.txt
+                    fi
+                done <.tmp/cloud_enum_public_aws_targets.txt
+            fi
+
+            jq -Rr '
+                fromjson?
+                | select(type == "object")
+                | select((.platform | type) == "string" and (.access | type) == "string" and (.msg | type) == "string" and (.target | type) == "string")
+                | select(.platform == "gcp" and .access == "public" and (.msg | ascii_upcase | contains("GOOGLE BUCKET")))
+                | .target
+            ' subdomains/.cloud_enum_s3.jsonl 2>>"$LOGFILE" | sort -u >.tmp/cloud_enum_public_gcp_targets.txt || true
+
+            if [[ -s ".tmp/cloud_enum_public_gcp_targets.txt" ]]; then
+                while IFS= read -r target; do
+                    local target_no_scheme bucket_name
+                    target_no_scheme="${target#http://}"
+                    target_no_scheme="${target_no_scheme#https://}"
+                    bucket_name=""
+
+                    if [[ "$target_no_scheme" == storage.googleapis.com/* ]]; then
+                        bucket_name="${target_no_scheme#storage.googleapis.com/}"
+                        bucket_name="${bucket_name%%/*}"
+                    elif [[ "$target_no_scheme" =~ ^([^.]+)\.storage\.googleapis\.com(/.*)?$ ]]; then
+                        bucket_name="${BASH_REMATCH[1]}"
+                    fi
+
+                    if [[ -n "$bucket_name" ]]; then
+                        run_command trufflehog gcs --project-id="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloudhunter_buckets_trufflehog.txt
+                    fi
+                done <.tmp/cloud_enum_public_gcp_targets.txt
+            fi
         fi
 
         # Append cloud assets to asset store
-        append_assets_from_file cloud asset subdomains/cloudhunter_open_buckets.txt
+        append_assets_from_file cloud asset subdomains/cloud_assets.txt
         append_assets_from_file cloud s3bucket subdomains/s3buckets.txt
 
-        end_func "Results are saved in subdomains/s3buckets.txt, subdomains/cloud_assets.txt, subdomains/s3buckets_trufflehog.txt, and subdomains/cloudhunter_buckets_trufflehog.txt" "${FUNCNAME[0]}"
+        end_func "Results are saved in subdomains/s3buckets.txt, subdomains/cloud_assets.txt, subdomains/.cloud_enum_s3.jsonl, subdomains/s3buckets_trufflehog.txt, and subdomains/cloudhunter_buckets_trufflehog.txt" "${FUNCNAME[0]}"
     else
         if [[ $S3BUCKETS == false ]]; then
             skip_notification "disabled"

@@ -132,7 +132,8 @@ reconFTW is packed with features to make reconnaissance thorough and efficient. 
 - **Recursive Search**: Performs recursive passive or bruteforce enumeration combined ([dsieve](https://github.com/trickest/dsieve)).
 - **Subdomain Takeover**: Detects vulnerable subdomains ([nuclei](https://github.com/projectdiscovery/nuclei) and [dnstake](https://github.com/pwnesia/dnstake)).
 - **DNS Zone Transfer**: Checks for misconfigured DNS zone transfers ([dig](https://linux.die.net/man/1/dig)).
-- **Cloud Buckets**: Identifies misconfigured S3 buckets ([S3Scanner](https://github.com/sa7mon/S3Scanner) and [CloudHunter](https://github.com/belane/CloudHunter)).
+- **Cloud Buckets**: Identifies misconfigured cloud buckets and exposed storage assets ([S3Scanner](https://github.com/sa7mon/S3Scanner) and [cloud_enum](https://github.com/initstring/cloud_enum)).
+- **Cloud Coverage Note**: Cloud bucket checks no longer include Alibaba OSS coverage after replacing CloudHunter with cloud_enum.
 - **Reverse IP Lookup**: Discovers subdomains via IP ranges ([hakip2host](https://github.com/hakluke/hakip2host)).
 
 ### Hosts
@@ -645,7 +646,8 @@ PASSWORD_DICT_ENGINE=cewler # cewler|pydictor
 PASSWORD_MIN_LENGTH=5 # Min password length
 PASSWORD_MAX_LENGTH=14 # Max password length
 KATANA_HEADLESS_PROFILE=off # off|smart|full
-CLOUDHUNTER_PERMUTATION=NORMAL # Options: DEEP (very slow), NORMAL (slow), NONE 
+CLOUD_ENUM_S3_PROFILE=optimized # optimized: quickscan (-qs, no -m/-b) | exhaustive: -m ${tools}/cloud_enum/enum_tools/fuzz.txt
+CLOUD_ENUM_S3_THREADS=20 # Threads used by cloud_enum in s3buckets/cloud enumeration
 
 # Vulns
 VULNS_GENERAL=false # Enable or disable the vulnerability module (very intrusive and slow)

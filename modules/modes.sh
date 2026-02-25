@@ -447,16 +447,16 @@ function passive() {
 
     _print_section "Subdomains"
 
-    subdomains_full
+    run_module_with_axiom_failover subdomains_full
     remove_big_files
 
     _print_section "Web Detection"
 
-    cdnprovider
+    run_module_with_axiom_failover cdnprovider
     # shellcheck disable=SC2034  # PORTSCAN_ACTIVE controls scan behavior
     PORTSCAN_ACTIVE=false
-    portscan
-    geo_info
+    run_module_with_axiom_failover portscan
+    run_module_with_axiom_failover geo_info
 
     if [[ $AXIOM == true ]]; then
         axiom_shutdown
@@ -488,10 +488,56 @@ function osint() {
     cloud_enum_scan
 }
 
+run_module_with_axiom_failover() {
+    local module_fn="$1"
+    shift || true
+
+    if ! declare -F "$module_fn" >/dev/null 2>&1; then
+        notification "Failover wrapper: unknown function '${module_fn}'" warn
+        return 1
+    fi
+
+    local axiom_before=false
+    if axiom_runtime_enabled; then
+        axiom_before=true
+    fi
+
+    "$module_fn" "$@"
+    local rc=$?
+
+    if [[ "$axiom_before" == "true" ]] \
+        && [[ "${AXIOM_RUNTIME_DISABLED:-false}" == "true" ]] \
+        && [[ "${AXIOM_FAILOVER_RETRY_ACTIVE:-false}" != "true" ]]; then
+        local prev_diff="${DIFF:-}"
+        local had_diff=false
+        [[ -v DIFF ]] && had_diff=true
+        local prev_retry="${AXIOM_FAILOVER_RETRY_ACTIVE:-false}"
+        local fail_reason="${AXIOM_RUNTIME_DISABLE_REASON:-unknown reason}"
+        local fail_cmd="${AXIOM_RUNTIME_DISABLE_CMD:-unknown command}"
+        AXIOM_FAILOVER_RETRY_ACTIVE=true
+
+        notification "Axiom failover in ${module_fn}; retrying once locally (${fail_reason})" warn
+        log_note "retrying module locally after axiom failover: module='${module_fn}' reason='${fail_reason}' cmd='${fail_cmd}'" "${FUNCNAME[0]}" "${LINENO}"
+
+        DIFF=true
+        "$module_fn" "$@"
+        rc=$?
+
+        if [[ "$had_diff" == "true" ]]; then
+            DIFF="$prev_diff"
+        else
+            unset DIFF
+        fi
+        AXIOM_FAILOVER_RETRY_ACTIVE="$prev_retry"
+    fi
+
+    return "$rc"
+}
+
 function vulns() {
     _print_section "Vulnerability Checks"
     if [[ $VULNS_GENERAL == true ]]; then
-        if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null; then
+        if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null && ! axiom_runtime_enabled; then
             # Parallel execution - group independent checks
             [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]] && printf "%b[*] Running vulnerability checks in parallel mode%b\n" "$bblue" "$reset"
             parallel_funcs "${PAR_VULNS_GROUP1_SIZE:-4}" crlf_checks xss ssrf_checks lfi
@@ -533,7 +579,7 @@ function vulns() {
             test_ssl
         else
             crlf_checks
-            xss
+            run_module_with_axiom_failover xss
             ssrf_checks
             lfi
             ssti
@@ -542,9 +588,9 @@ function vulns() {
             smuggling
             webcache
             spraying
-            brokenLinks
-            fuzzparams
-            nuclei_dast
+            run_module_with_axiom_failover brokenLinks
+            run_module_with_axiom_failover fuzzparams
+            run_module_with_axiom_failover nuclei_dast
             4xxbypass
             test_ssl
         fi
@@ -592,7 +638,7 @@ function multi_osint() {
     init_dns_resolver
     enable_command_trace
 
-    while IFS= read -r domain; do
+    while IFS= read -r domain || [[ -n "$domain" ]]; do
         [[ -z "$domain" ]] && continue
         dir="$workdir/targets/$domain"
         called_fn_dir="$dir/.called_fn"
@@ -622,6 +668,7 @@ function multi_osint() {
         apileaks
         third_party_misconfigs
         zonetransfer
+        cloud_enum_scan
     done <"$list"
     cd "$workdir" || {
         print_errorf "Failed to cd directory '%s' in %s @ line %s" "$workdir" "${FUNCNAME[0]}" "${LINENO}"
@@ -657,6 +704,9 @@ function recon() {
             RECON_PARTIAL_RUN=true
             RECON_OSINT_PARALLEL_FAILURES=$((RECON_OSINT_PARALLEL_FAILURES + osint_g2_rc))
         fi
+        if [[ "${S3BUCKETS:-false}" != "true" ]]; then
+            cloud_enum_scan
+        fi
     else
         domain_info
         ip_info
@@ -670,6 +720,9 @@ function recon() {
         apileaks
         third_party_misconfigs
         zonetransfer
+        if [[ "${S3BUCKETS:-false}" != "true" ]]; then
+            cloud_enum_scan
+        fi
     fi
 
     ui_module_end "OSINT" "osint/" "subdomains/"
@@ -682,19 +735,19 @@ function recon() {
 
     _print_section "Subdomains"
 
-    subdomains_full
-    subtakeover
+    run_module_with_axiom_failover subdomains_full
+    run_module_with_axiom_failover subtakeover
     remove_big_files
-    s3buckets
+    run_module_with_axiom_failover s3buckets
 
     ui_module_end "Subdomains" "subdomains/" "webs/"
     progress_module "Subdomains"
 
     _print_section "Web Detection"
-    webprobe_simple
-    webprobe_full
+    run_module_with_axiom_failover webprobe_simple
+    run_module_with_axiom_failover webprobe_full
 
-    if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null; then
+    if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null && ! axiom_runtime_enabled; then
         parallel_funcs "${PAR_WEB_DETECT_GROUP_SIZE:-3}" screenshot cdnprovider portscan favirecon_tech
         local webhost_rc=$?
         if ((webhost_rc > 0)); then
@@ -707,12 +760,12 @@ function recon() {
         fi
         geo_info
     else
-        screenshot
+        run_module_with_axiom_failover screenshot
         #	virtualhosts
-        cdnprovider
-        portscan
+        run_module_with_axiom_failover cdnprovider
+        run_module_with_axiom_failover portscan
         favirecon_tech
-        geo_info
+        run_module_with_axiom_failover geo_info
     fi
 
     ui_module_end "Web Detection" "webs/" "hosts/" "screenshots/"
@@ -730,15 +783,15 @@ function recon() {
     else
         _print_section "Web Analysis"
 
-        waf_checks
-        nuclei_check
-        graphql_scan
-        fuzz
-        iishortname
-        urlchecks
-        jschecks
+        run_module_with_axiom_failover waf_checks
+        run_module_with_axiom_failover nuclei_check
+        run_module_with_axiom_failover graphql_scan
+        run_module_with_axiom_failover fuzz
+        run_module_with_axiom_failover iishortname
+        run_module_with_axiom_failover urlchecks
+        run_module_with_axiom_failover jschecks
         websocket_checks
-        param_discovery
+        run_module_with_axiom_failover param_discovery
         grpc_reflection
         llm_probe
 
@@ -855,6 +908,9 @@ function multi_recon() {
         apileaks
         third_party_misconfigs
         zonetransfer
+        if [[ "${S3BUCKETS:-false}" != "true" ]]; then
+            cloud_enum_scan
+        fi
         currently=$(date +"%H:%M:%S")
         loopend=$(date +%s)
         getElapsedTime "$loopstart" "$loopend"
@@ -884,16 +940,16 @@ function multi_recon() {
             print_errorf "Failed to cd directory '%s' in %s @ line %s" "$dir" "${FUNCNAME[0]}" "${LINENO}"
             exit 1
         }
-        subdomains_full
-        webprobe_simple
-        webprobe_full
-        subtakeover
+        run_module_with_axiom_failover subdomains_full
+        run_module_with_axiom_failover webprobe_simple
+        run_module_with_axiom_failover webprobe_full
+        run_module_with_axiom_failover subtakeover
         remove_big_files
-        screenshot
+        run_module_with_axiom_failover screenshot
         #		virtualhosts
-        cdnprovider
-        portscan
-        geo_info
+        run_module_with_axiom_failover cdnprovider
+        run_module_with_axiom_failover portscan
+        run_module_with_axiom_failover geo_info
         currently=$(date +"%H:%M:%S")
         loopend=$(date +%s)
         getElapsedTime "$loopstart" "$loopend"
@@ -924,9 +980,9 @@ function multi_recon() {
         "$NUMOFLINES_pwndb_total" "$NUMOFLINES_subs_total" "$NUMOFLINES_subtko_total" \
         "$NUMOFLINES_webs_total" "$NUMOFLINES_webs_total_uncommon" \
         "$NUMOFLINES_ips_total" "$NUMOFLINES_cloudsprov_total"
-    s3buckets
-    waf_checks
-    nuclei_check
+    run_module_with_axiom_failover s3buckets
+    run_module_with_axiom_failover waf_checks
+    run_module_with_axiom_failover nuclei_check
     for domain in "${targets[@]}"; do
         [[ -z "$domain" ]] && continue
         loopstart=$(date +%s)
@@ -937,10 +993,10 @@ function multi_recon() {
             exit 1
         }
         loopstart=$(date +%s)
-        fuzz
-        iishortname
-        urlchecks
-        jschecks
+        run_module_with_axiom_failover fuzz
+        run_module_with_axiom_failover iishortname
+        run_module_with_axiom_failover urlchecks
+        run_module_with_axiom_failover jschecks
         currently=$(date +"%H:%M:%S")
         loopend=$(date +%s)
         getElapsedTime "$loopstart" "$loopend"
@@ -1046,7 +1102,7 @@ function multi_custom() {
 
         loopstart=$(date +%s)
 
-        $custom_f
+        run_module_with_axiom_failover "$custom_f"
 
         currently=$(date +"%H:%M:%S")
         loopend=$(date +%s)
@@ -1073,17 +1129,17 @@ function subs_menu() {
 
     _print_section "Subdomains"
 
-    subdomains_full
-    subtakeover
+    run_module_with_axiom_failover subdomains_full
+    run_module_with_axiom_failover subtakeover
     remove_big_files
     zonetransfer
-    s3buckets
+    run_module_with_axiom_failover s3buckets
 
     _print_section "Web Detection"
-    webprobe_simple
-    webprobe_full
+    run_module_with_axiom_failover webprobe_simple
+    run_module_with_axiom_failover webprobe_full
     favirecon_tech
-    screenshot
+    run_module_with_axiom_failover screenshot
     #	virtualhosts
 
     if [[ $AXIOM == true ]]; then
@@ -1096,31 +1152,31 @@ function subs_menu() {
 function webs_menu() {
     _print_section "Web Detection"
 
-    webprobe_simple
-    webprobe_full
+    run_module_with_axiom_failover webprobe_simple
+    run_module_with_axiom_failover webprobe_full
     favirecon_tech
-    subtakeover
+    run_module_with_axiom_failover subtakeover
     remove_big_files
-    screenshot
+    run_module_with_axiom_failover screenshot
     #	virtualhosts
 
     _print_section "Web Analysis"
 
-    waf_checks
-    nuclei_check
-    graphql_scan
-    fuzz
+    run_module_with_axiom_failover waf_checks
+    run_module_with_axiom_failover nuclei_check
+    run_module_with_axiom_failover graphql_scan
+    run_module_with_axiom_failover fuzz
     cms_scanner
-    iishortname
-    urlchecks
-    jschecks
+    run_module_with_axiom_failover iishortname
+    run_module_with_axiom_failover urlchecks
+    run_module_with_axiom_failover jschecks
     websocket_checks
     url_gf
     wordlist_gen
     wordlist_gen_roboxtractor
     password_dict
     url_ext
-    param_discovery
+    run_module_with_axiom_failover param_discovery
     grpc_reflection
 
     vulns
@@ -1136,26 +1192,26 @@ function zen_menu() {
 
     _print_section "Subdomains"
 
-    subdomains_full
-    subtakeover
+    run_module_with_axiom_failover subdomains_full
+    run_module_with_axiom_failover subtakeover
     remove_big_files
-    s3buckets
+    run_module_with_axiom_failover s3buckets
 
     _print_section "Web Detection"
-    webprobe_simple
-    webprobe_full
+    run_module_with_axiom_failover webprobe_simple
+    run_module_with_axiom_failover webprobe_full
     favirecon_tech
-    screenshot
+    run_module_with_axiom_failover screenshot
     #	virtualhosts
-    cdnprovider
+    run_module_with_axiom_failover cdnprovider
 
     _print_section "Web Analysis"
 
-    waf_checks
-    nuclei_check
-    graphql_scan
-    fuzz
-    iishortname
+    run_module_with_axiom_failover waf_checks
+    run_module_with_axiom_failover nuclei_check
+    run_module_with_axiom_failover graphql_scan
+    run_module_with_axiom_failover fuzz
+    run_module_with_axiom_failover iishortname
     if [[ $AXIOM == true ]]; then
         axiom_shutdown
     fi
@@ -1342,6 +1398,7 @@ function help() {
     printf "   --dry-run         Show what would be executed without running commands\n"
     printf "   --quiet           Minimal output (errors and final summary only)\n"
     printf "   --verbose         Extra output (PIDs, debug info)\n"
+    printf "   --log-format f    Console format: plain, jsonl, jsonl-strict\n"
     printf "   --parallel-log m  Parallel output mode: summary (default), tail, or full\n"
     printf "   --parallel        Run independent functions in parallel (faster but uses more resources)\n"
     printf "   --no-parallel     Force sequential execution\n"

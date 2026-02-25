@@ -521,7 +521,23 @@ function domain_info() {
 
         # Run whois command and check for errors
         run_command whois "$domain" >"osint/domain_info_general.txt"
-        run_command "${tools}/msftrecon/venv/bin/python3" "${tools}/msftrecon/msftrecon/msftrecon.py" -d ${domain} 2>>"$LOGFILE" >osint/azure_tenant_domains.txt || true
+        : >osint/azure_tenant_domains.txt
+        local msftrecon_output msftrecon_rc
+        msftrecon_output=$(mktemp)
+        msftrecon_rc=0
+        if ! run_command "${tools}/msftrecon/venv/bin/python3" "${tools}/msftrecon/msftrecon/msftrecon.py" -d "${domain}" \
+            >"$msftrecon_output" 2>>"$LOGFILE"; then
+            msftrecon_rc=$?
+        fi
+
+        if [[ $msftrecon_rc -eq 0 ]]; then
+            cat "$msftrecon_output" >osint/azure_tenant_domains.txt
+        else
+            log_note "domain_info: msftrecon failed (rc=${msftrecon_rc}), continuing" "${FUNCNAME[0]}" "${LINENO}"
+            _print_msg WARN "domain_info: msftrecon failed, continuing"
+            : >osint/azure_tenant_domains.txt
+        fi
+        rm -f "$msftrecon_output"
 
         company_name=$(unfurl format %r <<<"$domain")
         run_command "${tools}/Scopify/venv/bin/python3" "${tools}/Scopify/scopify.py" -c ${company_name} >osint/scopify.txt
@@ -659,13 +675,60 @@ function cloud_enum_scan() {
         && [[ $CLOUD_ENUM == true ]] && [[ $OSINT == true ]] \
         && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 
-        if ! command -v cloud_enum >/dev/null 2>&1; then
-            _print_msg WARN "${FUNCNAME[0]}: cloud_enum not found in PATH"
+        local cloud_enum_profile cloud_enum_mutations cloud_enum_quickscan cloud_enum_threads
+        local cloud_enum_python cloud_enum_script company_name
+        cloud_enum_profile=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
+        case "$cloud_enum_profile" in
+            optimized)
+                cloud_enum_mutations=""
+                cloud_enum_quickscan=true
+                ;;
+            exhaustive)
+                cloud_enum_mutations="${tools}/cloud_enum/enum_tools/fuzz.txt"
+                cloud_enum_quickscan=false
+                ;;
+            *)
+                cloud_enum_mutations=""
+                cloud_enum_quickscan=true
+                ;;
+        esac
+        cloud_enum_threads="${CLOUD_ENUM_S3_THREADS:-20}"
+        if [[ ! "$cloud_enum_threads" =~ ^[0-9]+$ ]] || [[ "$cloud_enum_threads" -le 0 ]]; then
+            cloud_enum_threads=20
+        fi
+
+        cloud_enum_python="${tools}/cloud_enum/venv/bin/python3"
+        cloud_enum_script="${tools}/cloud_enum/cloud_enum.py"
+        if [[ ! -f "$cloud_enum_script" ]] || [[ ! -x "$cloud_enum_python" ]]; then
+            _print_msg WARN "${FUNCNAME[0]}: cloud_enum runtime not found at ${tools}/cloud_enum"
             return 0
         fi
+        if [[ "$cloud_enum_quickscan" != true ]] && [[ ! -f "$cloud_enum_mutations" ]]; then
+            _print_msg WARN "${FUNCNAME[0]}: mutations list not found (${cloud_enum_mutations})"
+            return 0
+        fi
+
         start_func "${FUNCNAME[0]}" "Cloud storage enumeration"
         company_name=$(unfurl format %r <<<"$domain")
-        run_command cloud_enum -k "$company_name" -k "$domain" -k "${domain%%.*}" 2>>"$LOGFILE" | anew -q osint/cloud_enum.txt
+        local -a cloud_enum_cmd=(
+            env PYTHONWARNINGS=ignore
+            "$cloud_enum_python"
+            "$cloud_enum_script"
+            -k "$company_name"
+            -k "$domain"
+            -k "${domain%%.*}"
+            -t "$cloud_enum_threads"
+        )
+        if [[ -f "$resolvers" ]]; then
+            cloud_enum_cmd+=(-nsf "$resolvers")
+        fi
+        if [[ "$cloud_enum_quickscan" == true ]]; then
+            cloud_enum_cmd+=(-qs)
+        else
+            cloud_enum_cmd+=(-m "$cloud_enum_mutations")
+        fi
+
+        run_command "${cloud_enum_cmd[@]}" 2>>"$LOGFILE" | anew -q osint/cloud_enum.txt
         end_func "Results are saved in $domain/osint/cloud_enum.txt" "${FUNCNAME[0]}"
     else
         if [[ $CLOUD_ENUM == false ]] || [[ $OSINT == false ]]; then

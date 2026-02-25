@@ -1,0 +1,9 @@
+
+RESULTS  example.com
+Mode: FULL
+Subdomains: 1
+Web hosts: 0
+Findings: C 0 | H 0 | M 0 | L 0 | I 0
+Duration: 1m 00s
+Output: /tmp/recon
+
