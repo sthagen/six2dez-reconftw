@@ -106,10 +106,51 @@ function banner_grabber() {
     printf "%b\n" "$banner_code"
 }
 
+function banner_grabber_compact() {
+    local banner_file="${SCRIPTPATH}/banners.txt"
+
+    if [[ ! -f $banner_file ]]; then
+        echo "Banner file not found: $banner_file" >&2
+        return 1
+    fi
+
+    # shellcheck source=/dev/null
+    source "$banner_file"
+
+    local -a compact_vars=()
+    local v code line_count
+    for v in $(compgen -A variable | grep '^banner[0-9]\+$'); do
+        code="${!v}"
+        line_count=$(printf "%s\n" "$code" | wc -l | tr -d ' ')
+        if [[ "$line_count" =~ ^[0-9]+$ ]] && ((line_count <= 4)); then
+            compact_vars+=("$v")
+        fi
+    done
+
+    if [[ ${#compact_vars[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    local rand_index=$((RANDOM % ${#compact_vars[@]}))
+    local banner_var="${compact_vars[$rand_index]}"
+    printf "%b\n" "${!banner_var}"
+}
+
 function banner() {
     local banner_code
-    if banner_code=$(banner_grabber); then
-        printf "\n%b%s" "$bgreen" "$banner_code"
+    local term_lines=0
+    if [[ -t 1 ]] && command -v tput >/dev/null 2>&1; then
+        term_lines=$(tput lines 2>/dev/null || echo 0)
+    fi
+
+    if [[ "$term_lines" =~ ^[0-9]+$ ]] && ((term_lines > 0 && term_lines < 28)); then
+        banner_code=$(banner_grabber_compact || banner_grabber || true)
+    else
+        banner_code=$(banner_grabber || true)
+    fi
+
+    if [[ -n "$banner_code" ]]; then
+        printf "\n%b%s%b\n" "$bgreen" "$banner_code" "$reset"
     else
         printf "\n%bFailed to load banner.%b\n" "$bgreen" "$reset"
     fi
@@ -197,8 +238,8 @@ function tools_installed() {
         ["getjswords"]="${tools}/getjswords.py"
         ["JSA"]="${tools}/JSA/jsa.py"
         ["JSA_python"]="${tools}/JSA/venv/bin/python3"
-        ["CloudHunter"]="${tools}/CloudHunter/cloudhunter.py"
-        ["CloudHunter_python"]="${tools}/CloudHunter/venv/bin/python3"
+        ["cloud_enum"]="${tools}/cloud_enum/cloud_enum.py"
+        ["cloud_enum_python"]="${tools}/cloud_enum/venv/bin/python3"
         ["nmap-parse-output"]="${tools}/ultimate-nmap-parser/ultimate-nmap-parser.sh"
         ["regulator"]="${tools}/regulator/main.py"
         ["regulator_python"]="${tools}/regulator/venv/bin/python3"
@@ -304,7 +345,6 @@ function tools_installed() {
         ["grpcurl"]="grpcurl"
         ["arjun"]="arjun"
         ["gqlspection"]="gqlspection"
-        ["cloud_enum"]="cloud_enum"
         ["toxicache"]="toxicache"
         ["favirecon"]="favirecon"
         ["TInjA"]="TInjA"
@@ -346,10 +386,27 @@ function tools_installed() {
         else
             _print_msg WARN "Pending tools: ${missing_tools[*]}"
         fi
+
+        mark_missing_tools_warn_once "${missing_tools[@]}"
     fi
 
     if [[ $CHECK_TOOLS_OR_EXIT == true && $all_installed != true ]]; then
         exit 2
+    fi
+}
+
+# Mark warn_once keys for tools already reported in preflight to avoid duplicate warnings in runtime.
+# Usage: mark_missing_tools_warn_once "${missing_tools[@]}"
+mark_missing_tools_warn_once() {
+    local missing=("$@")
+    [[ ${#missing[@]} -eq 0 ]] && return 0
+
+    # dnstake is reported in preflight as "Pending tool", so suppress duplicate subtakeover warning.
+    if [[ " ${missing[*]} " == *" dnstake "* ]]; then
+        if ! declare -p WARN_ONCE_KEYS >/dev/null 2>&1; then
+            declare -gA WARN_ONCE_KEYS=()
+        fi
+        WARN_ONCE_KEYS["missing-tool-dnstake"]=1
     fi
 }
 
@@ -1594,8 +1651,8 @@ function generate_consolidated_report() {
     # Top assets from hotlist (if present)
     if [[ -s hotlist.txt ]] && command -v jq >/dev/null 2>&1; then
         top_assets_json=$(head -n "${HOTLIST_TOP:-50}" hotlist.txt \
-            | awk '{score=$1;$1=""; sub(/^ /,"",$0); printf "{\"asset\":\"%s\",\"score\":%s}\n",$0,score}' \
-            | jq -s '.')
+            | awk '{score=$1; $1=""; sub(/^ /,"",$0); print score "\t" $0}' \
+            | jq -Rn '[inputs | split("\t") | {asset: .[1], score: (.[0] | tonumber? // 0)}]')
     else
         top_assets_json="[]"
     fi
@@ -1611,10 +1668,10 @@ function generate_consolidated_report() {
             | awk -F'] ' '{
                 ts=$1; gsub(/^\[/,"",ts);
                 msg=$2;
-                if (msg ~ /Start function:/) { print "{\"timestamp\":\"" ts "\",\"level\":\"INFO\",\"function\":\"" msg "\",\"message\":\"started\"}" }
-                else if (msg ~ /End function:/) { print "{\"timestamp\":\"" ts "\",\"level\":\"SUCCESS\",\"function\":\"" msg "\",\"message\":\"completed\"}" }
+                if (msg ~ /Start function:/) { print ts "\tINFO\t" msg "\tstarted" }
+                else if (msg ~ /End function:/) { print ts "\tSUCCESS\t" msg "\tcompleted" }
             }' \
-            | jq -s '.')
+            | jq -Rn '[inputs | split("\t") | {timestamp: .[0], level: .[1], function: .[2], message: .[3]}]')
     else
         timeline_json="[]"
     fi

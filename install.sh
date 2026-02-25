@@ -269,7 +269,6 @@ declare -A pipxtools=(
     ["subwiz"]="hadriansecurity/subwiz"
     ["arjun"]="s0md3v/Arjun"
     ["gqlspection"]="doyensec/GQLSpection"
-    ["cloud_enum"]="initstring/cloud_enum"
     ["postleaksNg"]="six2dez/postleaksNG"
     ["cewler"]="roys/cewler"
 )
@@ -284,7 +283,7 @@ declare -A repos=(
     ["massdns"]="blechschmidt/massdns"
     ["testssl.sh"]="drwetter/testssl.sh"
     ["JSA"]="w9w/JSA"
-    ["CloudHunter"]="belane/CloudHunter"
+    ["cloud_enum"]="initstring/cloud_enum"
     ["ultimate-nmap-parser"]="shifty0g/ultimate-nmap-parser"
     ["gitdorks_go"]="damit5/gitdorks_go"
     ["Web-Cache-Vulnerability-Scanner"]="Hackmanit/Web-Cache-Vulnerability-Scanner"

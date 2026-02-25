@@ -160,8 +160,9 @@ while true; do
                 _print_msg WARN "Usage: -l <file> where file contains one target per line"
                 exit 1
             fi
-            while IFS= read -r t; do
+            while IFS= read -r t || [[ -n "$t" ]]; do
                 [[ -z "$t" ]] && continue
+                t=$(_sanitize_list_entry "$t") || continue
                 ipcidr_target "$t" "$list"
             done <"$list"
             shift 2
@@ -414,8 +415,8 @@ while true; do
             ;;
         '--log-format')
             CLI_LOG_FORMAT="$2"
-            if [[ ! "$CLI_LOG_FORMAT" =~ ^(plain|jsonl)$ ]]; then
-                print_errorf "Invalid --log-format value '%s' (allowed: plain|jsonl)" "$CLI_LOG_FORMAT"
+            if [[ ! "$CLI_LOG_FORMAT" =~ ^(plain|jsonl|jsonl-strict)$ ]]; then
+                print_errorf "Invalid --log-format value '%s' (allowed: plain|jsonl|jsonl-strict)" "$CLI_LOG_FORMAT"
                 exit 1
             fi
             shift 2
@@ -494,6 +495,10 @@ fi
 if [[ -n "${CLI_NO_COLOR:-}" ]]; then
     NO_COLOR=1
 fi
+if [[ "${LOG_FORMAT:-plain}" == "jsonl-strict" ]]; then
+    # Machine-only output mode: suppress human-oriented rendering.
+    OUTPUT_VERBOSITY=0
+fi
 
 if [[ "${HELP_REQUESTED:-false}" == "true" ]]; then
     help
@@ -504,6 +509,10 @@ if [[ "${NO_BANNER:-false}" == "true" ]]; then
     SHOW_BANNER=false
 else
     SHOW_BANNER=true
+fi
+if [[ "${OUTPUT_VERBOSITY:-1}" -eq 0 ]]; then
+    SHOW_BANNER=false
+    SHOW_LEGAL=false
 fi
 
 if [[ "${NO_REPORT:-false}" == "true" ]]; then
@@ -553,7 +562,7 @@ ui_init
 
 if [[ "${SHOW_BANNER:-false}" == "true" ]]; then
     banner
-    printf "\n\n" # Two empty lines after banner
+    printf "\n" # Single empty line after banner
 fi
 if [[ "${SHOW_LEGAL:-false}" == "true" ]]; then
     printf "  %b[LEGAL]%b Authorized testing only. You confirm explicit permission\n" "$yellow" "$reset"
@@ -619,8 +628,9 @@ case $opt_mode in
                 mode="list_recon"
             fi
             sed_i 's/\r$//' "$flist"
-            while IFS= read -r domain <&3; do
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 start
                 recon
                 end
@@ -640,8 +650,9 @@ case $opt_mode in
                 mode="subs_menu"
             fi
             sed_i 's/\r$//' "$flist"
-            while IFS= read -r domain <&3; do
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 subs_menu
             done 3<"$flist"
         else
@@ -654,8 +665,9 @@ case $opt_mode in
                 mode="passive"
             fi
             sed_i 's/\r$//' "$flist"
-            while IFS= read -r domain <&3; do
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 passive
             done 3<"$flist"
         else
@@ -669,8 +681,9 @@ case $opt_mode in
                 mode="all"
             fi
             sed_i 's/\r$//' "$flist"
-            while IFS= read -r domain <&3; do
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 all
             done 3<"$flist"
         else
@@ -700,8 +713,9 @@ case $opt_mode in
         fi
         if [[ -n $list ]]; then
             sed_i 's/\r$//' "$flist"
-            while IFS= read -r domain <&3; do
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 start
                 osint
                 end
@@ -718,8 +732,9 @@ case $opt_mode in
                 mode="zen_menu"
             fi
             sed_i 's/\r$//' "$flist"
-            while IFS= read -r domain <&3; do
+            while IFS= read -r domain <&3 || [[ -n "$domain" ]]; do
                 [[ -z "$domain" ]] && continue
+                domain=$(_sanitize_list_entry "$domain") || continue
                 zen_menu
             done 3<"$flist"
         else
@@ -741,7 +756,7 @@ case $opt_mode in
             }
             LOGFILE="${dir}/.log/${NOW}_${NOWT}.txt"
             called_fn_dir=$dir/.called_fn
-            $custom_function
+            run_module_with_axiom_failover "$custom_function"
             cd "${SCRIPTPATH}" || {
                 echo "Failed to cd directory '${SCRIPTPATH}'"
                 exit 1

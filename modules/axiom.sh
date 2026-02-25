@@ -128,6 +128,10 @@ function axiom_launch() {
 }
 
 function axiom_shutdown() {
+    if [[ "${AXIOM_RUNTIME_DISABLED:-false}" == "true" ]]; then
+        [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]] && notification "Axiom runtime already disabled; skipping fleet shutdown" info
+        return
+    fi
     if [[ $AXIOM_FLEET_LAUNCH == true ]] && [[ $AXIOM_FLEET_SHUTDOWN == true ]] && [[ -n $AXIOM_FLEET_NAME ]]; then
         #if [[ "$mode" == "subs_menu" ]] || [[ "$mode" == "list_recon" ]] || [[ "$mode" == "passive" ]] || [[ "$mode" == "all" ]]; then
         if [[ $mode == "subs_menu" ]] || [[ $mode == "passive" ]] || [[ $mode == "all" ]]; then
@@ -145,20 +149,21 @@ function axiom_selected() {
 
     if [[ ! $(axiom-ls 2>>"${LOGFILE:-/dev/null}" | tail -n +2 | sed '$ d' | wc -l) -gt 0 ]]; then
         end_func "No axiom instances running" "${FUNCNAME[0]}" warn
-        notification "No axiom instances running ${reset}\n\n" error
-        exit
+        axiom_disable_runtime "no axiom instances running" "axiom-ls"
+        return 0
     fi
 
     if [[ ! $(cat ~/.axiom/selected.conf | sed '/^\s*$/d' | wc -l) -gt 0 ]]; then
         end_func "No axiom instances selected" "${FUNCNAME[0]}" warn
-        notification "No axiom instances selected ${reset}\n\n" error
-        exit
+        axiom_disable_runtime "no axiom instances selected" "axiom-selected.conf"
+        return 0
     fi
 
     # Probe Axiom connectivity and optionally auto-repair host-key mismatches.
     print_notice RUN "axiom_selected" "checking axiom connectivity"
-    local axiom_probe_out
-    axiom_probe_out="$(axiom-exec "echo reconftw-axiom-probe" 2>&1 || true)"
+    local axiom_probe_out axiom_probe_rc
+    axiom_probe_out="$(axiom-exec "echo reconftw-axiom-probe" 2>&1)"
+    axiom_probe_rc=$?
     if echo "$axiom_probe_out" | grep -q "REMOTE HOST IDENTIFICATION HAS CHANGED"; then
         echo "$axiom_probe_out" >>"${LOGFILE:-/dev/null}"
 
@@ -186,18 +191,23 @@ function axiom_selected() {
                 fi
             done
 
-            axiom_probe_out="$(axiom-exec "echo reconftw-axiom-probe" 2>&1 || true)"
+            axiom_probe_out="$(axiom-exec "echo reconftw-axiom-probe" 2>&1)"
+            axiom_probe_rc=$?
             if echo "$axiom_probe_out" | grep -q "REMOTE HOST IDENTIFICATION HAS CHANGED"; then
-                notification "Axiom host-key mismatch persists after auto-repair; disabling AXIOM for this run and continuing locally" warn
                 echo "$axiom_probe_out" >>"${LOGFILE:-/dev/null}"
-                AXIOM=false
+                axiom_disable_runtime "host-key mismatch persists after auto-repair" "axiom-exec probe"
             else
                 notification "Axiom known_hosts auto-repair completed successfully" good
             fi
         else
-            notification "Axiom host-key mismatch detected; disabling AXIOM for this run and continuing locally" warn
-            AXIOM=false
+            axiom_disable_runtime "host-key mismatch detected" "axiom-exec probe"
         fi
     fi
+
+    if [[ "$axiom_probe_rc" -ne 0 ]] || axiom_transport_error_detected "$axiom_probe_out"; then
+        echo "$axiom_probe_out" >>"${LOGFILE:-/dev/null}"
+        axiom_disable_runtime "probe connectivity failure" "axiom-exec probe"
+    fi
+
     end_func "" "${FUNCNAME[0]}"
 }

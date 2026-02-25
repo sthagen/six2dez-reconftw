@@ -42,6 +42,8 @@ SH
   source "$project_root/reconftw.sh" --source-only
   export DOMAIN_ESCAPED
   DOMAIN_ESCAPED=$(escape_domain_regex "$domain")
+  export DOMAIN_MATCH_REGEX
+  DOMAIN_MATCH_REGEX=$(domain_match_regex "$domain")
 }
 
 teardown() {
@@ -61,4 +63,3 @@ teardown() {
   ! grep -q '^ERR\\(' "$LOGFILE"
   [ -f ".tmp/subdomains_tlsx_clean.txt" ]
 }
-

@@ -308,3 +308,59 @@ EOF
     [[ "$output" == *"new"* ]]
     grep -q "new" "$outfile"
 }
+
+###############################################################################
+# stream sanitization tests
+###############################################################################
+
+@test "strip_ansi_stream keeps final carriage-return segment" {
+    _run_strip_cr() { printf "line1\rline2\n" | strip_ansi_stream; }
+    run _run_strip_cr
+    [ "$status" -eq 0 ]
+    [ "$output" = "line2" ]
+}
+
+@test "strip_ansi_stream removes backspace redraw artifacts" {
+    _run_strip_bs() { printf "abc\b\bXY\n" | strip_ansi_stream; }
+    run _run_strip_bs
+    [ "$status" -eq 0 ]
+    [ "$output" = "aXY" ]
+}
+
+###############################################################################
+# domain matching helpers tests
+###############################################################################
+
+@test "grep_domain matches exact domain and subdomains only" {
+    cat > domains.txt <<'EOF'
+example.com
+api.example.com
+badexample.com
+foo.example.net
+EOF
+
+    run grep_domain domains.txt "example.com"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"example.com"* ]]
+    [[ "$output" == *"api.example.com"* ]]
+    [[ "$output" != *"badexample.com"* ]]
+    [[ "$output" != *"foo.example.net"* ]]
+}
+
+###############################################################################
+# warning helpers tests
+###############################################################################
+
+@test "warn_once emits the same warning key only once" {
+    WARN_ONCE_KEYS=()
+    _warn_twice() {
+        warn_once "missing-tool-dnstake" "dnstake missing"
+        warn_once "missing-tool-dnstake" "dnstake missing" || true
+    }
+
+    run _warn_twice
+    [ "$status" -eq 0 ]
+    local warn_count
+    warn_count=$(printf "%s\n" "$output" | grep -c "dnstake missing" || true)
+    [ "$warn_count" -eq 1 ]
+}

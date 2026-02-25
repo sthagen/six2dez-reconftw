@@ -237,3 +237,114 @@ setup() {
     # Function should return warning count (may be 0 if file not in list)
     [ "$status" -eq 0 ] || [ "$status" -eq 1 ]
 }
+
+@test "run_command disables Axiom runtime on transport failures" {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/mockbin"
+
+    cat >"$tmpdir/mockbin/axiom-scan" <<'EOF'
+#!/usr/bin/env bash
+echo "Could not resolve hostname axiom-node" >&2
+exit 255
+EOF
+    chmod +x "$tmpdir/mockbin/axiom-scan"
+
+    export PATH="$tmpdir/mockbin:$PATH"
+    export AXIOM=true
+    export AXIOM_RUNTIME_DISABLED=false
+    export AXIOM_RUNTIME_DISABLE_REASON=""
+    export AXIOM_RUNTIME_DISABLE_CMD=""
+    export AXIOM_RUNTIME_DISABLE_NOTIFIED=false
+    export DEBUG_LOG="$tmpdir/debug.log"
+    touch "$DEBUG_LOG"
+
+    local rc=0
+    run_command axiom-scan test-target -m httpx >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 0 ]
+    [ "$AXIOM_RUNTIME_DISABLED" = "true" ]
+    [ "$AXIOM" = "false" ]
+    [ "$AXIOM_RUNTIME_DISABLE_REASON" = "transport/connectivity failure" ]
+    [[ "$AXIOM_RUNTIME_DISABLE_CMD" == *"axiom-scan test-target -m httpx"* ]]
+
+    rm -rf "$tmpdir"
+}
+
+@test "axiom_disable_runtime is idempotent after first failover" {
+    export AXIOM=true
+    export AXIOM_RUNTIME_DISABLED=false
+    export AXIOM_RUNTIME_DISABLE_REASON=""
+    export AXIOM_RUNTIME_DISABLE_CMD=""
+    export AXIOM_RUNTIME_DISABLE_NOTIFIED=false
+
+    axiom_disable_runtime "first failure" "axiom-scan first"
+    axiom_disable_runtime "second failure" "axiom-scan second"
+
+    [ "$AXIOM_RUNTIME_DISABLED" = "true" ]
+    [ "$AXIOM_RUNTIME_DISABLE_REASON" = "first failure" ]
+    [ "$AXIOM_RUNTIME_DISABLE_CMD" = "axiom-scan first" ]
+}
+
+@test "run_module_with_axiom_failover retries module locally once" {
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    mkdir -p "$tmpdir/mockbin"
+
+    cat >"$tmpdir/mockbin/axiom-scan" <<'EOF'
+#!/usr/bin/env bash
+echo "Unable to reach any instance selected" >&2
+exit 1
+EOF
+    chmod +x "$tmpdir/mockbin/axiom-scan"
+
+    export PATH="$tmpdir/mockbin:$PATH"
+    export AXIOM=true
+    export AXIOM_RUNTIME_DISABLED=false
+    export AXIOM_RUNTIME_DISABLE_REASON=""
+    export AXIOM_RUNTIME_DISABLE_CMD=""
+    export AXIOM_RUNTIME_DISABLE_NOTIFIED=false
+    export AXIOM_FAILOVER_RETRY_ACTIVE=false
+    export DEBUG_LOG="$tmpdir/debug.log"
+    touch "$DEBUG_LOG"
+    unset DIFF 2>/dev/null || true
+
+    fake_calls=0
+    local_calls=0
+    fake_module() {
+        fake_calls=$((fake_calls + 1))
+        if [[ "$fake_calls" -eq 1 ]]; then
+            local rc=0
+            run_command axiom-scan payload -m httpx >/dev/null 2>&1 || rc=$?
+            return "$rc"
+        fi
+        local_calls=$((local_calls + 1))
+        return 0
+    }
+
+    run_module_with_axiom_failover fake_module
+    [ "$?" -eq 0 ]
+    [ "$fake_calls" -eq 2 ]
+    [ "$local_calls" -eq 1 ]
+    [ "$AXIOM_RUNTIME_DISABLED" = "true" ]
+    [ "$AXIOM" = "false" ]
+    [[ "${DIFF+x}" != "x" ]]
+
+    unset -f fake_module
+    rm -rf "$tmpdir"
+}
+
+@test "mark_missing_tools_warn_once marks dnstake key to avoid duplicate warnings" {
+    unset WARN_ONCE_KEYS 2>/dev/null || true
+
+    mark_missing_tools_warn_once "dnstake" "nuclei"
+
+    [ "${WARN_ONCE_KEYS[missing-tool-dnstake]}" = "1" ]
+}
+
+@test "mark_missing_tools_warn_once does nothing when dnstake is not missing" {
+    unset WARN_ONCE_KEYS 2>/dev/null || true
+
+    mark_missing_tools_warn_once "nuclei" "httpx"
+
+    [ -z "${WARN_ONCE_KEYS[missing-tool-dnstake]:-}" ]
+}

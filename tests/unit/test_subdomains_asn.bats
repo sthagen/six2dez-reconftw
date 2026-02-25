@@ -21,6 +21,7 @@ setup() {
     export ASN_ENUM=true
     export domain="example.com"
     export DOMAIN_ESCAPED="example\\.com"
+    export DOMAIN_MATCH_REGEX='(^|\\.)example\.com$'
     export PDCP_API_KEY=""
     export bred='' bblue='' bgreen='' byellow='' yellow='' reset=''
 
