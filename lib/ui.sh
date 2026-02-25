@@ -9,6 +9,7 @@ declare -r _UI_SH_LOADED=1
 _UI_IS_TTY=false
 _UI_NO_COLOR=false
 _UI_LOG_FORMAT="plain"
+_UI_JSONL_STRICT=false
 
 _UI_OK_COUNT=0
 _UI_WARN_COUNT=0
@@ -44,27 +45,85 @@ ui_init() {
     fi
 
     _UI_LOG_FORMAT="${LOG_FORMAT:-plain}"
+    case "$_UI_LOG_FORMAT" in
+        plain|jsonl|jsonl-strict) ;;
+        *) _UI_LOG_FORMAT="plain" ;;
+    esac
+    if [[ "$_UI_LOG_FORMAT" == "jsonl-strict" ]]; then
+        _UI_JSONL_STRICT=true
+    else
+        _UI_JSONL_STRICT=false
+    fi
 }
 
 ui_is_tty() {
     [[ "$_UI_IS_TTY" == true ]]
 }
 
+ui_is_jsonl() {
+    [[ "$_UI_LOG_FORMAT" == "jsonl" ]] || [[ "$_UI_LOG_FORMAT" == "jsonl-strict" ]]
+}
+
+ui_is_jsonl_strict() {
+    [[ "$_UI_JSONL_STRICT" == true ]]
+}
+
+ui_human_output_enabled() {
+    [[ "$_UI_JSONL_STRICT" != true ]]
+}
+
+ui_term_width() {
+    local width="${COLUMNS:-0}"
+    if ! [[ "$width" =~ ^[0-9]+$ ]] || ((width < 20)); then
+        if command -v tput >/dev/null 2>&1; then
+            width=$(tput cols 2>/dev/null || echo 0)
+        fi
+    fi
+    if ! [[ "$width" =~ ^[0-9]+$ ]] || ((width < 20)); then
+        width=80
+    fi
+    printf "%s" "$width"
+}
+
+ui_truncate_text() {
+    local text="$1"
+    local max="${2:-80}"
+    if ! [[ "$max" =~ ^[0-9]+$ ]] || ((max < 1)); then
+        printf "%s" "$text"
+        return 0
+    fi
+    if (( ${#text} <= max )); then
+        printf "%s" "$text"
+        return 0
+    fi
+    if (( max <= 3 )); then
+        printf "%s" "${text:0:max}"
+        return 0
+    fi
+    printf "%s..." "${text:0:max-3}"
+}
+
 ui_live_progress_begin() {
+    ui_human_output_enabled || return 0
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
     ui_is_tty || return 0
     _UI_LIVE_ACTIVE=true
 }
 
 ui_live_progress_update() {
+    ui_human_output_enabled || return 0
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
     ui_is_tty || return 0
     local line="$1"
+    local width
+    width=$(ui_term_width)
+    line=$(ui_truncate_text "$line" "$width")
     _UI_LIVE_ACTIVE=true
     printf "\r  %b%s%b\033[K" "${bblue:-}" "$line" "${reset:-}"
 }
 
 ui_live_progress_break() {
+    ui_human_output_enabled || return 0
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
     ui_is_tty || return 0
     [[ "$_UI_LIVE_ACTIVE" == true ]] || return 0
@@ -72,6 +131,7 @@ ui_live_progress_break() {
 }
 
 ui_live_progress_end() {
+    ui_human_output_enabled || return 0
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
     ui_is_tty || return 0
     if [[ "$_UI_LIVE_ACTIVE" == true ]]; then
@@ -113,21 +173,34 @@ ui_header() {
         z) mode_label="ZEN" ;;
     esac
 
+    ui_log_jsonl "INFO" "header" "Run header" \
+        "mode=${mode_label}" "target=${target}" "parallel=${parallel}" "jobs=${threads}" "outdir=${outdir}" "started=${started}"
+
+    [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
+    ui_human_output_enabled || return 0
+
     local header_line
     header_line=$(printf "reconftw %s by @six2dez | Authorized testing only" "${reconftw_version:-}")
+    local width
+    width=$(ui_term_width)
     local header_rule=""
     local i
-    for ((i = 0; i < ${#header_line}; i++)); do
+    for ((i = 0; i < width; i++)); do
         header_rule+="─"
     done
+    header_line=$(ui_truncate_text "$header_line" "$width")
     printf "%b%s%b\n" "${bgreen:-}" "$header_rule" "${reset:-}"
     printf "%b%s%b\n" "${bgreen:-}" "$header_line" "${reset:-}"
     printf "%b%s%b\n" "${bgreen:-}" "$header_rule" "${reset:-}"
-    printf "Mode: %s | Target: %s | Profile: %s | Parallel: %s | Jobs: %s\n" \
-        "$mode_label" "$target" "$(basename "${profile}")" "$parallel" "$threads"
-    printf "Output: %s\n" "$outdir"
+    local line
+    line=$(printf "Mode: %s | Target: %s | Profile: %s | Parallel: %s | Jobs: %s" \
+        "$mode_label" "$target" "$(basename "${profile}")" "$parallel" "$threads")
+    printf "%s\n" "$(ui_truncate_text "$line" "$width")"
+    line=$(printf "Output: %s" "$outdir")
+    printf "%s\n" "$(ui_truncate_text "$line" "$width")"
     if [[ -n "${RECON_BEHIND_NAT:-}" ]] || [[ -n "${DNS_RESOLVER_SELECTED:-}" ]]; then
-        printf "Network: behind_nat=%s | DNS: %s\n" "${RECON_BEHIND_NAT:-unknown}" "${DNS_RESOLVER_SELECTED:-unknown}"
+        line=$(printf "Network: behind_nat=%s | DNS: %s" "${RECON_BEHIND_NAT:-unknown}" "${DNS_RESOLVER_SELECTED:-unknown}")
+        printf "%s\n" "$(ui_truncate_text "$line" "$width")"
     fi
     if [[ -n "${PERF_PROFILE_INFO:-}" ]] || [[ -n "${DISK_SPACE_INFO:-}" ]]; then
         local info_line=""
@@ -141,9 +214,11 @@ ui_header() {
                 info_line="${DISK_SPACE_INFO}"
             fi
         fi
-        printf "System: %s\n" "$info_line"
+        line=$(printf "System: %s" "$info_line")
+        printf "%s\n" "$(ui_truncate_text "$line" "$width")"
     fi
-    printf "Started: %s\n\n" "$started"
+    line=$(printf "Started: %s" "$started")
+    printf "%s\n\n" "$(ui_truncate_text "$line" "$width")"
 }
 
 ui_section() {
@@ -154,6 +229,8 @@ ui_progress() {
     local step="$1" current="$2" total="$3" pct="$4" eta="$5"
     local counters
     counters=$(ui_counts_summary)
+    ui_log_jsonl "INFO" "progress" "Module progress" \
+        "step=${step}" "current=${current}" "total=${total}" "pct=${pct}" "eta=${eta}" "counters=${counters}"
 
     if ui_is_tty; then
         ui_live_progress_begin
@@ -165,6 +242,9 @@ ui_progress() {
 
 ui_batch_start() {
     local label="$1" total_jobs="$2" batch_num="${3:-}" batch_total="${4:-}"
+    ui_log_jsonl "INFO" "parallel_batch" "Parallel batch started" \
+        "label=${label}" "jobs=${total_jobs}" "batch_num=${batch_num}" "batch_total=${batch_total}"
+    ui_human_output_enabled || return 0
     ui_live_progress_break
 
     if ui_is_tty; then
@@ -193,6 +273,10 @@ ui_batch_end() {
     local ok="$1" warn="$2" fail="$3" elapsed="$4"
     local skip="${5:-0}" cache="${6:-0}"
     local completed="${7:-0}" total="${8:-0}"
+    ui_log_jsonl "INFO" "parallel_batch" "Parallel batch completed" \
+        "ok=${ok}" "warn=${warn}" "fail=${fail}" "skip=${skip}" "cache=${cache}" \
+        "completed=${completed}" "total=${total}" "elapsed=${elapsed}"
+    ui_human_output_enabled || return 0
     ui_live_progress_break
     printf "  %b── ok:%d warn:%d fail:%d skip:%d cache:%d │ %d/%d completed │ %ds elapsed ──%b\n" \
         "${bgreen:-}" "$ok" "$warn" "$fail" "$skip" "$cache" "$completed" "$total" "$elapsed" "${reset:-}"
@@ -204,6 +288,12 @@ ui_summary() {
     local crit="${7:-0}" high="${8:-0}" med="${9:-0}" low="${10:-0}" info="${11:-0}"
     local debug_log="${DEBUG_LOG:-}"
 
+    ui_log_jsonl "SUCCESS" "summary" "Run summary" \
+        "target=${target}" "mode=${mode_label}" "subdomains=${subs}" "web_hosts=${webs}" \
+        "critical=${crit}" "high=${high}" "medium=${med}" "low=${low}" "info=${info}" \
+        "duration=${duration}" "outdir=${outdir}"
+
+    ui_human_output_enabled || return 0
     ui_live_progress_end
     printf "\n"
     printf "RESULTS  %s\n" "$target"
@@ -221,13 +311,19 @@ ui_summary() {
 }
 
 ui_module_end() {
-    [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
+    if [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && ! ui_is_jsonl; then
+        return 0
+    fi
     local module="$1"
     shift
+    local files_list=""
     if [[ $# -gt 0 ]]; then
-        local files_list
         files_list=$(printf '%s, ' "$@")
         files_list="${files_list%, }"
+    fi
+    ui_log_jsonl "INFO" "$module" "Module completed" "artifacts=${files_list}"
+    ui_human_output_enabled || return 0
+    if [[ $# -gt 0 ]]; then
         printf "  %bOutput:%b %s\n\n" "${bblue:-}" "${reset:-}" "$files_list"
     fi
     _print_module_end "$module"
@@ -244,7 +340,7 @@ ui_json_escape() {
 }
 
 ui_log_jsonl() {
-    [[ "$_UI_LOG_FORMAT" != "jsonl" ]] && return 0
+    ui_is_jsonl || return 0
     local level="$1" module="$2" message="$3"
     shift 3
 
@@ -261,7 +357,7 @@ ui_log_jsonl() {
         if [[ "$kv" =~ ^([^=]+)=(.*)$ ]]; then
             key=$(ui_json_escape "${BASH_REMATCH[1]}")
             val=$(ui_json_escape "${BASH_REMATCH[2]}")
-            extra+="\",\"${key}\":\"${val}"
+            extra+=",\"${key}\":\"${val}\""
         fi
     done
 

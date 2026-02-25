@@ -411,6 +411,12 @@ function run_command() {
         return 0
     fi
 
+    local cmd_name="${1##*/}"
+    if [[ "$cmd_name" == axiom-* ]]; then
+        _run_axiom_command_with_detection "$@"
+        return $?
+    fi
+
     if [[ "${ADAPTIVE_RATE_LIMIT:-false}" == "true" ]]; then
         run_with_adaptive_rate "$@"
     else
@@ -461,6 +467,10 @@ MAX_RATE_LIMIT=500
 RATE_LIMIT_BACKOFF_FACTOR=0.5
 RATE_LIMIT_INCREASE_FACTOR=1.2
 PARALLEL_PRESSURE_LEVEL=${PARALLEL_PRESSURE_LEVEL:-normal}
+AXIOM_RUNTIME_DISABLED=${AXIOM_RUNTIME_DISABLED:-false}
+AXIOM_RUNTIME_DISABLE_REASON=${AXIOM_RUNTIME_DISABLE_REASON:-}
+AXIOM_RUNTIME_DISABLE_CMD=${AXIOM_RUNTIME_DISABLE_CMD:-}
+AXIOM_RUNTIME_DISABLE_NOTIFIED=${AXIOM_RUNTIME_DISABLE_NOTIFIED:-false}
 
 # Detect rate limit errors in command output
 # Usage: detect_rate_limit_error <output_file_or_string>
@@ -472,6 +482,78 @@ function detect_rate_limit_error() {
         return 0 # Rate limit detected
     fi
     return 1 # No rate limit detected
+}
+
+axiom_runtime_enabled() {
+    [[ ${AXIOM:-false} == true ]] && [[ ${AXIOM_RUNTIME_DISABLED:-false} != true ]]
+}
+
+axiom_transport_error_detected() {
+    local output="$1"
+    [[ -z "$output" ]] && return 1
+    grep -qiE \
+        "(Unable to reach any instance selected|No instance supplied or instance not found|No axiom instances running|No axiom instances selected|Could not resolve hostname|Temporary failure in name resolution|Name or service not known|Connection timed out|i/o timeout|context deadline exceeded|dial tcp|connection refused|kex_exchange_identification|Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED)" \
+        <<<"$output"
+}
+
+axiom_disable_runtime() {
+    local reason="${1:-transport error}"
+    local cmd="${2:-axiom command}"
+
+    if [[ ${AXIOM_RUNTIME_DISABLED:-false} == true ]]; then
+        return 0
+    fi
+
+    AXIOM=false
+    AXIOM_RUNTIME_DISABLED=true
+    AXIOM_RUNTIME_DISABLE_REASON="$reason"
+    AXIOM_RUNTIME_DISABLE_CMD="$cmd"
+
+    if [[ ${AXIOM_RUNTIME_DISABLE_NOTIFIED:-false} != true ]]; then
+        AXIOM_RUNTIME_DISABLE_NOTIFIED=true
+        if declare -F notification >/dev/null 2>&1; then
+            notification "Axiom disabled for this run (${reason}). Falling back to local execution." warn
+        fi
+    fi
+
+    log_note "axiom runtime disabled: reason='${reason}' cmd='${cmd}'" "${FUNCNAME[0]}" "${LINENO}"
+}
+
+_handle_axiom_command_result() {
+    local rc="${1:-0}"
+    local cmd="${2:-}"
+    local err_file="${3:-}"
+    local err_out=""
+
+    if [[ -n "$err_file" && -f "$err_file" ]]; then
+        err_out=$(cat "$err_file")
+    fi
+
+    if [[ "$rc" -ne 0 ]] && axiom_transport_error_detected "$err_out"; then
+        axiom_disable_runtime "transport/connectivity failure" "$cmd"
+    fi
+}
+
+_run_axiom_command_with_detection() {
+    local -a cmd=("$@")
+    local axiom_err_tmp
+    local rc
+    axiom_err_tmp=$(mktemp)
+
+    if [[ -n "${DEBUG_LOG:-}" ]]; then
+        if [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]]; then
+            "${cmd[@]}" 2> >(tee -a "$axiom_err_tmp" "$DEBUG_LOG" >&2)
+        else
+            "${cmd[@]}" 2> >(tee -a "$axiom_err_tmp" "$DEBUG_LOG" >/dev/null)
+        fi
+    else
+        "${cmd[@]}" 2> >(tee -a "$axiom_err_tmp" >&2)
+    fi
+    rc=$?
+
+    _handle_axiom_command_result "$rc" "${cmd[*]}" "$axiom_err_tmp"
+    rm -f "$axiom_err_tmp" 2>/dev/null || true
+    return "$rc"
 }
 
 # Adjust rate limit based on errors

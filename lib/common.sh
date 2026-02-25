@@ -174,10 +174,45 @@ _ui_live_break_if_needed() {
     fi
 }
 
+_ui_human_output_enabled() {
+    if declare -F ui_human_output_enabled >/dev/null 2>&1; then
+        ui_human_output_enabled
+        return $?
+    fi
+    return 0
+}
+
+_ui_jsonl_enabled() {
+    if declare -F ui_is_jsonl >/dev/null 2>&1; then
+        ui_is_jsonl
+        return $?
+    fi
+    return 1
+}
+
+_truncate_with_ellipsis() {
+    local text="$1"
+    local max="${2:-0}"
+    if ! [[ "$max" =~ ^[0-9]+$ ]] || (( max < 1 )); then
+        printf "%s" "$text"
+        return 0
+    fi
+    if (( ${#text} <= max )); then
+        printf "%s" "$text"
+        return 0
+    fi
+    if (( max <= 3 )); then
+        printf "%s" "${text:0:max}"
+        return 0
+    fi
+    printf "%s..." "${text:0:max-3}"
+}
+
 # Print a normalized task/status line
 # Usage: print_task STATE module duration_seconds reason
 print_task() {
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
+    _ui_human_output_enabled || return 0
     _ui_live_break_if_needed
     local state="$1" module="$2" duration="${3:-0}" reason="${4:-}"
     local color=""
@@ -196,7 +231,18 @@ print_task() {
     esac
 
     local module_pad=26
+    local term_width=0
+    if declare -F ui_term_width >/dev/null 2>&1; then
+        term_width=$(ui_term_width)
+    fi
+    if [[ "$term_width" =~ ^[0-9]+$ ]] && ((term_width > 0)); then
+        local max_module_pad=$((term_width - 18))
+        ((max_module_pad < 12)) && max_module_pad=12
+        ((max_module_pad > 40)) && max_module_pad=40
+        module_pad="$max_module_pad"
+    fi
     local mod="$module"
+    mod=$(_truncate_with_ellipsis "$mod" "$module_pad")
     local pad=$((module_pad - ${#mod}))
     ((pad < 1)) && pad=1
     local spaces
@@ -220,6 +266,7 @@ record_incident() {
 }
 
 print_incidents() {
+    _ui_human_output_enabled || return 0
     local debug_log="${1:-}"
     local count=${#INCIDENTS_ITEMS[@]}
     ((count == 0)) && return 0
@@ -237,9 +284,17 @@ print_incidents() {
 # Print a compact artifacts line
 # Usage: print_artifacts "file1" ["file2"...]
 print_artifacts() {
-    [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
+    if [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && ! _ui_jsonl_enabled; then
+        return 0
+    fi
     local items="$*"
     [[ -z "$items" ]] && return 0
+    if ! _ui_human_output_enabled; then
+        if declare -F ui_log_jsonl >/dev/null 2>&1; then
+            ui_log_jsonl "INFO" "artifacts" "Artifacts summary" "items=${items}"
+        fi
+        return 0
+    fi
     printf "[INFO] Artifacts: %s\n" "$items"
 }
 
@@ -248,6 +303,12 @@ print_artifacts() {
 print_notice() {
     local level="$1" module="$2" message="$3"
     [[ -z "$module" ]] && module="notice"
+    if declare -F ui_log_jsonl >/dev/null 2>&1; then
+        ui_log_jsonl "$level" "$module" "$message"
+    fi
+    if ! _ui_human_output_enabled; then
+        return 0
+    fi
     if [[ "$level" == "FAIL" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]]; then
         (OUTPUT_VERBOSITY=1; print_task "$level" "$module" "--" "$message")
     else
@@ -307,6 +368,10 @@ _print_msg() {
         INFO) color="${bblue:-}" ;;
         *) color="${bblue:-}" ;;
     esac
+    if declare -F ui_log_jsonl >/dev/null 2>&1; then
+        ui_log_jsonl "$level" "${FUNCNAME[1]:-module}" "$msg"
+    fi
+    _ui_human_output_enabled || return 0
     if [[ "$level" == "INFO" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -lt 2 ]]; then
         return 0
     fi
@@ -315,20 +380,46 @@ _print_msg() {
     printf "%b[%s]%b %s\n" "$color" "$level" "${reset:-}" "$msg"
 }
 
+# Print a warning message only once per run key.
+# Usage: warn_once "missing-tool-dnstake" "subtakeover: dnstake binary not found in PATH - install dnstake first"
+warn_once() {
+    local key="${1:-}"
+    shift || true
+    local msg="$*"
+    [[ -z "$key" || -z "$msg" ]] && return 1
+
+    if ! declare -p WARN_ONCE_KEYS >/dev/null 2>&1; then
+        declare -gA WARN_ONCE_KEYS=()
+    fi
+
+    if [[ "${WARN_ONCE_KEYS[$key]:-0}" == "1" ]]; then
+        return 1
+    fi
+
+    WARN_ONCE_KEYS["$key"]=1
+    _print_msg WARN "$msg"
+    return 0
+}
+
 # Module start message with timestamp
 # Usage: _print_module_start "OSINT"
 _print_module_start() {
-    [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
-    if declare -F ui_live_progress_end >/dev/null 2>&1; then
-        ui_live_progress_end
-    fi
     local title="${1^^}"
     local ts
     ts=$(date +'%Y-%m-%d %H:%M:%S')
-
-    # Reset dry-run tracking for new module
+    # Reset dry-run tracking for new module.
     if declare -F ui_dryrun_reset >/dev/null 2>&1; then
         ui_dryrun_reset
+    fi
+    if declare -F ui_log_jsonl >/dev/null 2>&1; then
+        ui_log_jsonl "INFO" "$title" "Module started" "started=${ts}"
+    fi
+    if [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && ! _ui_jsonl_enabled; then
+        return 0
+    fi
+    _ui_human_output_enabled || return 0
+    if declare -F ui_live_progress_end >/dev/null 2>&1; then
+        ui_live_progress_end
     fi
 
     printf "\n%b── %s ───────────────────────────────────────────────────────────────%b\n" \
@@ -339,13 +430,19 @@ _print_module_start() {
 # Module end message with timestamp
 # Usage: _print_module_end "OSINT"
 _print_module_end() {
-    [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
-    if declare -F ui_live_progress_end >/dev/null 2>&1; then
-        ui_live_progress_end
-    fi
     local title="${1^^}"
     local ts
     ts=$(date +'%Y-%m-%d %H:%M:%S')
+    if declare -F ui_log_jsonl >/dev/null 2>&1; then
+        ui_log_jsonl "INFO" "$title" "Module completed" "completed=${ts}"
+    fi
+    if [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && ! _ui_jsonl_enabled; then
+        return 0
+    fi
+    _ui_human_output_enabled || return 0
+    if declare -F ui_live_progress_end >/dev/null 2>&1; then
+        ui_live_progress_end
+    fi
 
     # Show dry-run summary before completion timestamp
     if declare -F ui_dryrun_summary >/dev/null 2>&1; then
@@ -365,10 +462,17 @@ _print_section() {
 # Usage: _print_status OK "sub_passive" "12s"
 #        _print_status SKIP "sub_crt" "(disabled)"
 _print_status() {
-    [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
+    local jsonl_enabled=false
+    if _ui_jsonl_enabled; then
+        jsonl_enabled=true
+    fi
+    if [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && [[ "$jsonl_enabled" != "true" ]]; then
+        return 0
+    fi
     local badge="$1" text="$2" detail="${3:-}"
     local duration="0"
     local reason=""
+    local hide_cache_human=false
 
     if [[ -n "$detail" ]]; then
         if [[ "$detail" =~ ^[0-9]+$ ]]; then
@@ -383,17 +487,29 @@ _print_status() {
     fi
 
     if [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" != "true" ]]; then
-        if declare -F ui_count_inc >/dev/null 2>&1; then
-            ui_count_inc "$badge"
-        fi
-        return 0
+        hide_cache_human=true
     fi
-    if [[ "$badge" == "INFO" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -lt 2 ]]; then
+    if [[ "$badge" == "INFO" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -lt 2 ]] && [[ "$jsonl_enabled" != "true" ]]; then
         return 0
     fi
 
     if declare -F ui_count_inc >/dev/null 2>&1; then
         ui_count_inc "$badge"
+    fi
+    if declare -F ui_log_jsonl >/dev/null 2>&1; then
+        ui_log_jsonl "$badge" "$text" "Status update" "duration=${duration}" "reason=${reason}"
+    fi
+    if ! _ui_human_output_enabled; then
+        if [[ "$badge" == "FAIL" ]]; then
+            [[ -z "$reason" ]] && reason="see debug.log"
+            record_incident "FAIL" "$text" "$reason"
+        elif [[ "$badge" == "WARN" ]] && [[ -n "$reason" ]]; then
+            record_incident "WARN" "$text" "$reason"
+        fi
+        return 0
+    fi
+    if [[ "$hide_cache_human" == "true" ]]; then
+        return 0
     fi
     print_task "$badge" "$text" "$duration" "$reason"
     if [[ "$badge" == "FAIL" ]]; then
@@ -408,6 +524,10 @@ _print_status() {
 # Usage: _print_error "something failed"
 _print_error() {
     local msg="$1"
+    if declare -F ui_log_jsonl >/dev/null 2>&1; then
+        ui_log_jsonl "ERROR" "${FUNCNAME[1]:-module}" "$msg"
+    fi
+    _ui_human_output_enabled || return 0
     _ui_live_break_if_needed
     printf "%b[FAIL]%b %s\n" "${bred:-}" "${reset:-}" "$msg" >&2
 }
@@ -416,6 +536,7 @@ _print_error() {
 # Usage: _print_rule
 _print_rule() {
     [[ "${OUTPUT_VERBOSITY:-1}" -lt 1 ]] && return 0
+    _ui_human_output_enabled || return 0
     printf "%b──────────────────────────────────────────────────────────────%b\n" "${bgreen:-}" "${reset:-}"
 }
 
@@ -449,10 +570,12 @@ skip_notification() {
 
     if [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]]; then
         _print_status "$badge" "$func_name" "0s"
-        if [[ "$badge" == "SKIP" ]]; then
-            printf "         reason: %s\n" "$reason_code"
-        elif [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; then
-            printf "         reason: %s\n" "$reason_code"
+        if _ui_human_output_enabled; then
+            if [[ "$badge" == "SKIP" ]]; then
+                printf "         reason: %s\n" "$reason_code"
+            elif [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; then
+                printf "         reason: %s\n" "$reason_code"
+            fi
         fi
         if [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]]; then
             if [[ "$badge" == "CACHE" ]]; then
@@ -540,8 +663,19 @@ run_tool() {
 # Remove ANSI/control sequences from a text stream.
 # Usage: some_command | strip_ansi_stream
 strip_ansi_stream() {
-    # CSI + OSC sequence stripping, keeping regular text intact.
-    sed -E $'s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g; s/\x1B\\][^\a]*(\a|\x1B\\\\)//g'
+    # Strip ANSI/OSC control sequences and normalize carriage-return updates.
+    # This keeps only the final segment of CR-updated lines and removes backspaces.
+    if command -v perl >/dev/null 2>&1; then
+        perl -pe '
+            s/\x1B\[[0-9;?]*[ -\/]*[@-~]//g;
+            s/\x1B\][^\x07]*(?:\x07|\x1B\\)//g;
+            s/.*\r//;
+            1 while s/[^\x08]\x08//g;
+            s/\x08//g;
+        '
+    else
+        sed -E $'s/\x1B\\[[0-9;?]*[ -/]*[@-~]//g; s/\x1B\\][^\a]*(\a|\x1B\\\\)//g; s/.*\r//; :a; s/[^\x08]\x08//g; ta; s/\x08//g'
+    fi
 }
 
 # Run a command with periodic heartbeat status lines for long-running tasks.
@@ -577,7 +711,7 @@ run_with_heartbeat() {
     run_command "$@" >>"$hb_log" 2>&1 &
     local cmd_pid=$!
 
-    if [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]]; then
+    if [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]] && _ui_human_output_enabled; then
         if declare -F ui_is_tty >/dev/null 2>&1 && ui_is_tty && declare -F ui_live_progress_begin >/dev/null 2>&1; then
             use_live=true
             ui_live_progress_begin
@@ -605,7 +739,7 @@ run_with_heartbeat() {
     local rc=$?
     elapsed=$(($(date +%s) - start_ts))
 
-    if [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]]; then
+    if [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]] && _ui_human_output_enabled; then
         if [[ "$use_live" == true ]] && declare -F ui_live_progress_end >/dev/null 2>&1; then
             ui_live_progress_end
         else
@@ -669,12 +803,10 @@ filter_and_process() {
     local count=0
     
     if [[ -s "$input" ]]; then
-        local escaped
-        escaped=$(escape_domain_regex "$domain")
-        count=$(grep "\\.${escaped}$\\|^${escaped}$" "$input" 2>/dev/null \
+        count=$(grep_domain "$input" "$domain" 2>/dev/null \
             | anew "$output" 2>/dev/null \
             | sed '/^$/d' \
-            | wc -l | tr -d ' ')
+            | wc -l | tr -d ' ' || true)
     fi
     
     [[ "$count" =~ ^[0-9]+$ ]] || count=0
@@ -692,6 +824,15 @@ escape_domain_regex() {
     printf '%s' "$1" | sed 's/[.[\*^$()+?{|]/\\&/g'
 }
 
+# Build a robust ERE pattern that matches exact domain or any subdomain.
+# Usage: regex=$(domain_match_regex "example.com")
+domain_match_regex() {
+    local raw_domain="$1"
+    local escaped
+    escaped=$(escape_domain_regex "$raw_domain")
+    printf '(^|\\.)%s$' "$escaped"
+}
+
 # Grep lines matching a domain (as subdomain or exact match) with proper escaping
 # Usage: grep_domain input_file domain [extra_grep_flags...]
 # Matches: "*.domain" and "domain" exactly (anchored)
@@ -699,9 +840,9 @@ grep_domain() {
     local input="$1"
     local raw_domain="$2"
     shift 2
-    local escaped
-    escaped=$(escape_domain_regex "$raw_domain")
-    grep "$@" "\.${escaped}$\|^${escaped}$" "$input"
+    local pattern
+    pattern=$(domain_match_regex "$raw_domain")
+    grep "$@" -E "$pattern" "$input"
 }
 
 ###############################################################################
