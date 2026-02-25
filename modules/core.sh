@@ -1594,8 +1594,8 @@ function generate_consolidated_report() {
     # Top assets from hotlist (if present)
     if [[ -s hotlist.txt ]] && command -v jq >/dev/null 2>&1; then
         top_assets_json=$(head -n "${HOTLIST_TOP:-50}" hotlist.txt \
-            | awk '{score=$1;$1=""; sub(/^ /,"",$0); printf "{\"asset\":\"%s\",\"score\":%s}\n",$0,score}' \
-            | jq -s '.')
+            | awk '{score=$1; $1=""; sub(/^ /,"",$0); print score "\t" $0}' \
+            | jq -Rn '[inputs | split("\t") | {asset: .[1], score: (.[0] | tonumber? // 0)}]')
     else
         top_assets_json="[]"
     fi
@@ -1611,10 +1611,10 @@ function generate_consolidated_report() {
             | awk -F'] ' '{
                 ts=$1; gsub(/^\[/,"",ts);
                 msg=$2;
-                if (msg ~ /Start function:/) { print "{\"timestamp\":\"" ts "\",\"level\":\"INFO\",\"function\":\"" msg "\",\"message\":\"started\"}" }
-                else if (msg ~ /End function:/) { print "{\"timestamp\":\"" ts "\",\"level\":\"SUCCESS\",\"function\":\"" msg "\",\"message\":\"completed\"}" }
+                if (msg ~ /Start function:/) { print ts "\tINFO\t" msg "\tstarted" }
+                else if (msg ~ /End function:/) { print ts "\tSUCCESS\t" msg "\tcompleted" }
             }' \
-            | jq -s '.')
+            | jq -Rn '[inputs | split("\t") | {timestamp: .[0], level: .[1], function: .[2], message: .[3]}]')
     else
         timeline_json="[]"
     fi
