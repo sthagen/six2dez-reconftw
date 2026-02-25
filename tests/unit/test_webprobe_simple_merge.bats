@@ -17,6 +17,8 @@ setup() {
   export MOCK_BIN="$TEST_DIR/mockbin"
   mkdir -p "$MOCK_BIN"
   export PATH="$MOCK_BIN:$PATH"
+  export REAL_SED
+  REAL_SED="$(command -v sed)"
 
   source "$project_root/reconftw.sh" --source-only
   export domain="example.com"
@@ -152,4 +154,72 @@ SH
   [ -s "webs/webs_all.txt" ]
   grep -q "https://a.example.com" "webs/webs_all.txt"
   grep -q "https://b.example.com" "webs/webs_all.txt"
+}
+
+@test "webprobe_simple normalizes wildcard hosts from URL-list output" {
+  mkdir -p .tmp webs subdomains
+  printf "a.example.com\n" > subdomains/subdomains.txt
+
+  cat > "$MOCK_BIN/httpx" <<'SH'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf '%s\n' "https://*.wild.example.com" "https://plain.example.com" > "$out"
+SH
+  chmod +x "$MOCK_BIN/httpx"
+
+  run webprobe_simple
+  [ "$status" -eq 0 ]
+  [ -s "webs/webs.txt" ]
+  grep -q "https://wild.example.com" "webs/webs.txt"
+  grep -q "https://plain.example.com" "webs/webs.txt"
+  ! grep -q "https://\\*\\.wild.example.com" "webs/webs.txt"
+}
+
+@test "webprobe_simple remains functional when sed rejects legacy s/*.// pattern" {
+  mkdir -p .tmp webs subdomains
+  printf "a.example.com\n" > subdomains/subdomains.txt
+
+  cat > "$MOCK_BIN/sed" <<SH
+#!/usr/bin/env bash
+if [[ "\$*" == *"s/*.//"* ]]; then
+  echo "invalid regex" >&2
+  exit 1
+fi
+exec "$REAL_SED" "\$@"
+SH
+  chmod +x "$MOCK_BIN/sed"
+
+  cat > "$MOCK_BIN/httpx" <<'SH'
+#!/usr/bin/env bash
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o)
+      out="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+printf '%s\n' "https://*.safe.example.com" > "$out"
+SH
+  chmod +x "$MOCK_BIN/httpx"
+
+  run webprobe_simple
+  [ "$status" -eq 0 ]
+  [ -s "webs/webs.txt" ]
+  grep -q "https://safe.example.com" "webs/webs.txt"
 }

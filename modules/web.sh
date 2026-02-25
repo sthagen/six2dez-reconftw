@@ -38,6 +38,44 @@ _run_httpx() {
     fi
 }
 
+# Normalize wildcard-prefixed hosts in URL-like lines.
+# Examples:
+#   *.api.example.com -> api.example.com
+#   https://*.api.example.com -> https://api.example.com
+_normalize_probe_urls() {
+    sed -E 's#^(https?://)\*\.#\1#; s#^\*\.##'
+}
+
+# Detect whether a probe output file contains JSONL.
+# Returns 0 when the first non-empty line starts with "{", else 1.
+_probe_output_is_json() {
+    local input_file="$1"
+    local first_line
+    first_line="$(awk 'NF {print; exit}' "$input_file" 2>/dev/null || true)"
+    [[ "$first_line" =~ ^[[:space:]]*\{ ]]
+}
+
+# Extract in-scope URLs from a probe file that may be JSONL or plain URL list.
+# Usage: _extract_probe_urls <input_file> <domain_filter> <output_file>
+_extract_probe_urls() {
+    local input_file="$1"
+    local dom_filter="$2"
+    local output_file="$3"
+
+    [[ ! -s "$input_file" ]] && return 0
+
+    if _probe_output_is_json "$input_file"; then
+        jq -r 'try (.url // empty)' "$input_file" 2>/dev/null \
+            | awk -v dom="$dom_filter" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' \
+            | _normalize_probe_urls \
+            | anew_q_safe "$output_file"
+    else
+        awk -v dom="$dom_filter" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' "$input_file" 2>/dev/null \
+            | _normalize_probe_urls \
+            | anew_q_safe "$output_file"
+    fi
+}
+
 # Process httpx JSON output: extract URLs and web info
 # Usage: _process_httpx_output json_file url_output info_output
 _process_httpx_output() {
@@ -51,7 +89,7 @@ _process_httpx_output() {
     jq -r 'try .url' "$json_file" 2>/dev/null \
         | grep "$domain" \
         | grep -aEo 'https?://[^ ]+' \
-        | sed 's/*.//' \
+        | _normalize_probe_urls \
         | anew_q_safe "$url_output"
 
     # Extract plain web info
@@ -126,11 +164,12 @@ function webprobe_simple() {
 
 		        # webprobe_simple is expected to write JSONL when using httpx -json.
 		        # Some runners (or wrappers) may produce a plain URL list instead.
-		        # Detect the format early to avoid jq parse errors and missing webs/webs.txt.
-		        local probe_first_line probe_is_json
-		        probe_first_line="$(awk 'NF {print; exit}' .tmp/web_full_info_probe.txt 2>/dev/null || true)"
+		        local probe_is_json probe_input_lines urls_extracted
 		        probe_is_json=false
-		        [[ "$probe_first_line" =~ ^[[:space:]]*\{ ]] && probe_is_json=true
+		        if _probe_output_is_json ".tmp/web_full_info_probe.txt"; then
+		            probe_is_json=true
+		        fi
+		        probe_input_lines=$(awk 'NF {c++} END {print c+0}' .tmp/web_full_info_probe.txt 2>/dev/null)
 
 		        # Always start fresh for this run (used by urlchecks diff too).
 		        : >.tmp/probed_tmp.txt 2>/dev/null || true
@@ -150,20 +189,20 @@ function webprobe_simple() {
 		            fi
 		            # Keep cache as JSONL for later merges.
 		            cp webs/web_full_info.txt .tmp/web_full_info.txt 2>/dev/null || true
-
-		            # Extract URLs from JSONL
-		            if [[ -s "webs/web_full_info.txt" ]]; then
-		                jq -r 'try (.url // empty)' webs/web_full_info.txt 2>/dev/null \
-		                    | awk -v dom="$domain" 'index($0, dom) && $0 ~ /^https?:\\/\\// {print}' \
-		                    | sed 's/*.//' | anew_q_safe .tmp/probed_tmp.txt
-		            fi
 		        else
 		            log_note "webprobe_simple: probe output not JSON; treating as URL list" "${FUNCNAME[0]}" "${LINENO}"
-		            if [[ -s ".tmp/web_full_info_probe.txt" ]]; then
-		                awk -v dom="$domain" 'index($0, dom) && $0 ~ /^https?:\\/\\// {print}' .tmp/web_full_info_probe.txt 2>/dev/null \
-		                    | sed 's/*.//' | anew_q_safe .tmp/probed_tmp.txt
-		            fi
 		        fi
+		        _extract_probe_urls ".tmp/web_full_info_probe.txt" "$domain" ".tmp/probed_tmp.txt" || true
+		        urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_tmp.txt 2>/dev/null)
+
+		        # Fallback: if extraction from probe output produced nothing, try cached JSON.
+		        if [[ "${urls_extracted:-0}" -eq 0 ]] && [[ -s ".tmp/web_full_info.txt" ]] && _probe_output_is_json ".tmp/web_full_info.txt"; then
+		            _extract_probe_urls ".tmp/web_full_info.txt" "$domain" ".tmp/probed_tmp.txt" || true
+		            urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_tmp.txt 2>/dev/null)
+		            log_note "webprobe_simple: fallback to .tmp/web_full_info.txt urls_extracted=${urls_extracted}" "${FUNCNAME[0]}" "${LINENO}"
+		        fi
+
+		        log_note "webprobe_simple: probe_input_lines=${probe_input_lines} urls_extracted=${urls_extracted:-0} probe_is_json=${probe_is_json}" "${FUNCNAME[0]}" "${LINENO}"
 
 	        # Adaptive throttling heuristics: mark slow hosts (429/403) from httpx
 	        if [[ -s "webs/web_full_info.txt" ]]; then
@@ -253,26 +292,47 @@ function webprobe_full() {
     fi
         fi
 
-        # Process web_full_info_uncommon.txt
-        if [[ -s ".tmp/web_full_info_uncommon.txt" ]]; then
-            # Extract URLs
-            jq -r 'try .url' .tmp/web_full_info_uncommon.txt 2>/dev/null \
-                | grep "$domain" \
-                | grep -aEo 'https?://[^ ]+' \
-                | sed 's/*.//' \
-                | anew_q_safe .tmp/probed_uncommon_ports_tmp.txt
+	        # Process web_full_info_uncommon.txt
+	        if [[ -s ".tmp/web_full_info_uncommon.txt" ]]; then
+	            local uncommon_is_json uncommon_input_lines uncommon_urls_extracted
+	            uncommon_is_json=false
+	            if _probe_output_is_json ".tmp/web_full_info_uncommon.txt"; then
+	                uncommon_is_json=true
+	            fi
+	            uncommon_input_lines=$(awk 'NF {c++} END {print c+0}' .tmp/web_full_info_uncommon.txt 2>/dev/null)
 
-            # Extract plain web info
-            jq -r 'try . | "\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' .tmp/web_full_info_uncommon.txt \
-                | grep "$domain" \
-                | anew_q_safe webs/web_full_info_uncommon_plain.txt
+	            : >.tmp/probed_uncommon_ports_tmp.txt 2>/dev/null || true
+	            _extract_probe_urls ".tmp/web_full_info_uncommon.txt" "$domain" ".tmp/probed_uncommon_ports_tmp.txt" || true
 
-            # Update webs_full_info_uncommon.txt based on whether domain is IP
-            if [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                cat .tmp/web_full_info_uncommon.txt 2>>"$LOGFILE" | anew_q_safe webs/web_full_info_uncommon.txt
-            else
-                grep "$domain" .tmp/web_full_info_uncommon.txt | anew_q_safe webs/web_full_info_uncommon.txt
-            fi
+	            if [[ "$uncommon_is_json" != true ]]; then
+	                log_note "webprobe_full: probe output not JSON; treating as URL list" "${FUNCNAME[0]}" "${LINENO}"
+	                awk -v dom="$domain" 'index($0, dom) && $0 ~ /^https?:\/\// {print}' .tmp/web_full_info_uncommon.txt 2>/dev/null \
+	                    | _normalize_probe_urls \
+	                    | anew_q_safe webs/web_full_info_uncommon.txt
+	            fi
+
+	            if [[ "$uncommon_is_json" == true ]]; then
+	                # Extract plain web info
+	                jq -r 'try . | "\(.url) [\(.status_code)] [\(.title)] [\(.webserver)] \(.tech)"' .tmp/web_full_info_uncommon.txt \
+	                    | grep "$domain" \
+	                    | anew_q_safe webs/web_full_info_uncommon_plain.txt
+
+	                # Update webs_full_info_uncommon.txt based on whether domain is IP
+	                if [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+	                    cat .tmp/web_full_info_uncommon.txt 2>>"$LOGFILE" | anew_q_safe webs/web_full_info_uncommon.txt
+	                else
+	                    grep "$domain" .tmp/web_full_info_uncommon.txt | anew_q_safe webs/web_full_info_uncommon.txt
+	                fi
+	            fi
+	            uncommon_urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_uncommon_ports_tmp.txt 2>/dev/null)
+
+	            # Fallback: try prior uncommon cache when current extraction yields nothing.
+	            if [[ "${uncommon_urls_extracted:-0}" -eq 0 ]] && [[ -s "webs/web_full_info_uncommon.txt" ]]; then
+	                _extract_probe_urls "webs/web_full_info_uncommon.txt" "$domain" ".tmp/probed_uncommon_ports_tmp.txt" || true
+	                uncommon_urls_extracted=$(awk 'NF {c++} END {print c+0}' .tmp/probed_uncommon_ports_tmp.txt 2>/dev/null)
+	                log_note "webprobe_full: fallback to webs/web_full_info_uncommon.txt urls_extracted=${uncommon_urls_extracted}" "${FUNCNAME[0]}" "${LINENO}"
+	            fi
+	            log_note "webprobe_full: probe_input_lines=${uncommon_input_lines} urls_extracted=${uncommon_urls_extracted:-0} probe_is_json=${uncommon_is_json}" "${FUNCNAME[0]}" "${LINENO}"
 
             # Count new websites
             if ! NUMOFLINES=$(anew_safe webs/webs_uncommon_ports.txt <.tmp/probed_uncommon_ports_tmp.txt | sed '/^$/d' | wc -l); then
