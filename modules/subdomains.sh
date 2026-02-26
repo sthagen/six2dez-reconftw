@@ -1994,41 +1994,13 @@ function s3buckets() {
             fi
         fi
 
-        # Initialize cloud enumeration artifacts (legacy filenames kept for compatibility)
-        if ! : >subdomains/cloudhunter_open_buckets.txt; then
-            print_warnf "Failed to initialize cloudhunter_open_buckets.txt."
-        fi
         if ! : >subdomains/.cloud_enum_s3.jsonl; then
             print_warnf "Failed to initialize .cloud_enum_s3.jsonl."
         fi
-        rm -f .tmp/cloud_enum_s3_legacy.txt .tmp/cloud_enum_public_aws_targets.txt .tmp/cloud_enum_public_gcp_targets.txt 2>/dev/null || true
+        rm -f .tmp/cloud_enum_public_aws_targets.txt .tmp/cloud_enum_public_gcp_targets.txt 2>/dev/null || true
 
-        local cloud_enum_profile cloud_enum_threads cloud_enum_mutations cloud_enum_quickscan
-        local cloud_enum_status cloud_enum_rc company_name
-        local -a cloud_enum_runtime_cmd cloud_enum_cmd
-        cloud_enum_profile=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
-        cloud_enum_threads="${CLOUD_ENUM_S3_THREADS:-20}"
-        if [[ ! "$cloud_enum_threads" =~ ^[0-9]+$ ]] || [[ "$cloud_enum_threads" -le 0 ]]; then
-            _print_msg WARN "Invalid CLOUD_ENUM_S3_THREADS (${cloud_enum_threads}); using default 20."
-            cloud_enum_threads=20
-        fi
-
-        case "$cloud_enum_profile" in
-            optimized)
-                cloud_enum_mutations=""
-                cloud_enum_quickscan=true
-                ;;
-            exhaustive)
-                cloud_enum_mutations="${tools}/cloud_enum/enum_tools/fuzz.txt"
-                cloud_enum_quickscan=false
-                ;;
-            *)
-                _print_msg WARN "Invalid CLOUD_ENUM_S3_PROFILE (${cloud_enum_profile}); using optimized."
-                cloud_enum_profile="optimized"
-                cloud_enum_mutations=""
-                cloud_enum_quickscan=true
-                ;;
-        esac
+        local cloud_enum_status cloud_enum_rc
+        local -a cloud_enum_cmd
 
         printf "Processing domain: %s\n" "$domain" >>"$LOGFILE"
         print_notice RUN "cloud_enum" "enumerating cloud buckets (cloud_enum)"
@@ -2036,35 +2008,10 @@ function s3buckets() {
         cloud_enum_status="OK"
         cloud_enum_rc=0
 
-        if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
-            _print_msg WARN "cloud_enum runtime missing (checked ${tools}/cloud_enum and PATH); skipping cloud enumeration."
-            cloud_enum_status="WARN"
-            cloud_enum_rc=1
-        elif [[ "$cloud_enum_quickscan" != true ]] && [[ ! -f "$cloud_enum_mutations" ]]; then
-            _print_msg WARN "cloud_enum mutations file not found (${cloud_enum_mutations}); skipping cloud enumeration."
+        if ! build_cloud_enum_command cloud_enum_cmd "s3buckets" "$domain" "$dir/subdomains/.cloud_enum_s3.jsonl"; then
             cloud_enum_status="WARN"
             cloud_enum_rc=1
         else
-            company_name=$(unfurl format %r <<<"$domain")
-            cloud_enum_cmd=(
-                env PYTHONWARNINGS=ignore
-                "${cloud_enum_runtime_cmd[@]}"
-                -k "$company_name"
-                -k "$domain"
-                -k "${domain%%.*}"
-                -t "$cloud_enum_threads"
-                -f json
-                -l "$dir/subdomains/.cloud_enum_s3.jsonl"
-            )
-            if [[ -f "$resolvers" ]]; then
-                cloud_enum_cmd+=(-nsf "$resolvers")
-            fi
-            if [[ "$cloud_enum_quickscan" == true ]]; then
-                cloud_enum_cmd+=(-qs)
-            else
-                cloud_enum_cmd+=(-m "$cloud_enum_mutations")
-            fi
-
             run_command "${cloud_enum_cmd[@]}" >>"$LOGFILE" 2>>"$LOGFILE" || cloud_enum_rc=$?
             if [[ $cloud_enum_rc -ne 0 ]]; then
                 cloud_enum_status="WARN"
@@ -2074,21 +2021,8 @@ function s3buckets() {
         fi
         end_subfunc "cloud_enum done" "cloud_enum" "$cloud_enum_status"
 
-        # Process cloud_enum JSON results into legacy-compatible artifacts
+        # Process cloud_enum JSON results
         if [[ -s "subdomains/.cloud_enum_s3.jsonl" ]]; then
-            if ! jq -Rr '
-                fromjson?
-                | select(type == "object")
-                | select((.platform | type) == "string" and (.access | type) == "string" and (.msg | type) == "string" and (.target | type) == "string")
-                | "\(.platform)/\(.access)/\(.msg)/\(.target)"
-            ' subdomains/.cloud_enum_s3.jsonl 2>>"$LOGFILE" | sort -u >.tmp/cloud_enum_s3_legacy.txt; then
-                print_warnf "Failed to normalize cloud_enum JSON output."
-            fi
-
-            if [[ -s ".tmp/cloud_enum_s3_legacy.txt" ]]; then
-                cat .tmp/cloud_enum_s3_legacy.txt >subdomains/cloudhunter_open_buckets.txt
-            fi
-
             if ! NUMOFLINES1=$(jq -Rr '
                 fromjson?
                 | select(type == "object")
@@ -2147,7 +2081,7 @@ function s3buckets() {
                         bucket_name="${BASH_REMATCH[1]}"
                     fi
                     if [[ -n "$bucket_name" ]]; then
-                        run_command trufflehog s3 --bucket="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloudhunter_buckets_trufflehog.txt
+                        run_command trufflehog s3 --bucket="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloud_enum_buckets_trufflehog.txt
                     fi
                 done <.tmp/cloud_enum_public_aws_targets.txt
             fi
@@ -2175,7 +2109,7 @@ function s3buckets() {
                     fi
 
                     if [[ -n "$bucket_name" ]]; then
-                        run_command trufflehog gcs --project-id="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloudhunter_buckets_trufflehog.txt
+                        run_command trufflehog gcs --project-id="$bucket_name" -j 2>/dev/null | jq -c | anew -q subdomains/cloud_enum_buckets_trufflehog.txt
                     fi
                 done <.tmp/cloud_enum_public_gcp_targets.txt
             fi
@@ -2185,7 +2119,7 @@ function s3buckets() {
         append_assets_from_file cloud asset subdomains/cloud_assets.txt
         append_assets_from_file cloud s3bucket subdomains/s3buckets.txt
 
-        end_func "Results are saved in subdomains/s3buckets.txt, subdomains/cloud_assets.txt, subdomains/.cloud_enum_s3.jsonl, subdomains/s3buckets_trufflehog.txt, and subdomains/cloudhunter_buckets_trufflehog.txt" "${FUNCNAME[0]}"
+        end_func "Results are saved in subdomains/s3buckets.txt, subdomains/cloud_assets.txt, subdomains/.cloud_enum_s3.jsonl, subdomains/s3buckets_trufflehog.txt, and subdomains/cloud_enum_buckets_trufflehog.txt" "${FUNCNAME[0]}"
     else
         if [[ $S3BUCKETS == false ]]; then
             skip_notification "disabled"

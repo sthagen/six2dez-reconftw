@@ -205,24 +205,139 @@ function check_version() {
 
 resolve_cloud_enum_runtime() {
     local -n runtime_cmd_ref="$1"
-    local cloud_enum_python cloud_enum_script cloud_enum_bin
+    local cloud_enum_python cloud_enum_script cloud_enum_requirements
 
     runtime_cmd_ref=()
     cloud_enum_python="${tools}/cloud_enum/venv/bin/python3"
     cloud_enum_script="${tools}/cloud_enum/cloud_enum.py"
+    cloud_enum_requirements="${tools}/cloud_enum/requirements.txt"
 
     if [[ -x "$cloud_enum_python" ]] && [[ -f "$cloud_enum_script" ]]; then
         runtime_cmd_ref=("$cloud_enum_python" "$cloud_enum_script")
         return 0
     fi
 
-    cloud_enum_bin="$(command -v cloud_enum 2>/dev/null || true)"
-    if [[ -n "$cloud_enum_bin" ]]; then
-        runtime_cmd_ref=("$cloud_enum_bin")
+    if command -v uv >/dev/null 2>&1 \
+        && [[ -f "$cloud_enum_script" ]] \
+        && [[ -f "$cloud_enum_requirements" ]]; then
+        runtime_cmd_ref=(
+            uv run
+            --directory "${tools}/cloud_enum"
+            --with-requirements "$cloud_enum_requirements"
+            cloud_enum.py
+        )
         return 0
     fi
 
     return 1
+}
+
+resolve_cloud_enum_execution_settings() {
+    local caller="$1"
+    local -n profile_ref="$2"
+    local -n threads_ref="$3"
+    local -n quickscan_ref="$4"
+    local -n mutations_ref="$5"
+    local -n brute_ref="$6"
+    local fuzz_file script_file
+
+    fuzz_file="${tools}/cloud_enum/enum_tools/fuzz.txt"
+    script_file="${tools}/cloud_enum/cloud_enum.py"
+
+    profile_ref=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
+    threads_ref="${CLOUD_ENUM_S3_THREADS:-20}"
+    if [[ ! "$threads_ref" =~ ^[0-9]+$ ]] || [[ "$threads_ref" -le 0 ]]; then
+        _print_msg WARN "${caller}: invalid CLOUD_ENUM_S3_THREADS (${threads_ref}); using default 20."
+        threads_ref=20
+    fi
+
+    case "$profile_ref" in
+        optimized)
+            quickscan_ref=true
+            ;;
+        exhaustive)
+            quickscan_ref=false
+            ;;
+        *)
+            _print_msg WARN "${caller}: invalid CLOUD_ENUM_S3_PROFILE (${profile_ref}); using optimized."
+            profile_ref="optimized"
+            quickscan_ref=true
+            ;;
+    esac
+
+    if [[ "$quickscan_ref" != true ]] && [[ ! -r "$fuzz_file" ]]; then
+        _print_msg WARN "${caller}: cloud_enum exhaustive profile requested but mutations file not found (${fuzz_file}); using optimized."
+        profile_ref="optimized"
+        quickscan_ref=true
+    fi
+
+    if [[ "$quickscan_ref" == true ]]; then
+        if [[ -r "$fuzz_file" ]]; then
+            mutations_ref="$fuzz_file"
+            brute_ref="$fuzz_file"
+        elif [[ -r "$script_file" ]]; then
+            # cloud_enum validates -m/-b paths even in quickscan mode.
+            mutations_ref="$script_file"
+            brute_ref="$script_file"
+        else
+            _print_msg WARN "${caller}: cloud_enum support file not found (${fuzz_file} or ${script_file})."
+            return 1
+        fi
+    else
+        mutations_ref="$fuzz_file"
+        brute_ref="$fuzz_file"
+    fi
+
+    return 0
+}
+
+build_cloud_enum_command() {
+    local -n cmd_ref="$1"
+    local caller="$2"
+    local target_domain="$3"
+    local output_json_path="${4:-}"
+    local company_name cloud_enum_profile cloud_enum_mutations cloud_enum_brute cloud_enum_quickscan cloud_enum_threads
+    local -a cloud_enum_runtime_cmd
+
+    cmd_ref=()
+
+    if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
+        _print_msg WARN "${caller}: cloud_enum runtime not found (checked ${tools}/cloud_enum local runtime and uv run)."
+        return 1
+    fi
+
+    if ! resolve_cloud_enum_execution_settings "$caller" \
+        cloud_enum_profile \
+        cloud_enum_threads \
+        cloud_enum_quickscan \
+        cloud_enum_mutations \
+        cloud_enum_brute; then
+        return 1
+    fi
+
+    company_name=$(unfurl format %r <<<"$target_domain")
+    cmd_ref=(
+        env PYTHONWARNINGS=ignore
+        "${cloud_enum_runtime_cmd[@]}"
+        -k "$company_name"
+        -k "$target_domain"
+        -k "${target_domain%%.*}"
+        -t "$cloud_enum_threads"
+        -m "$cloud_enum_mutations"
+        -b "$cloud_enum_brute"
+    )
+
+    if [[ -f "$resolvers" ]]; then
+        cmd_ref+=(-nsf "$resolvers")
+    fi
+    if [[ "$cloud_enum_quickscan" == true ]]; then
+        cmd_ref+=(-qs)
+    fi
+    if [[ -n "$output_json_path" ]]; then
+        cmd_ref+=(-f json -l "$output_json_path")
+    fi
+
+    return 0
 }
 
 format_pending_tools_message() {
@@ -414,8 +529,7 @@ function tools_installed() {
 
     local -a cloud_enum_runtime_cmd=()
     if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
-        all_installed=false
-        missing_tools+=("cloud_enum")
+        _print_msg WARN "cloud_enum runtime not available; cloud enumeration steps will be skipped."
     fi
 
     if [[ $all_installed == true ]]; then

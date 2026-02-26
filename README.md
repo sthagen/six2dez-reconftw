@@ -134,6 +134,7 @@ reconFTW is packed with features to make reconnaissance thorough and efficient. 
 - **DNS Zone Transfer**: Checks for misconfigured DNS zone transfers ([dig](https://linux.die.net/man/1/dig)).
 - **Cloud Buckets**: Identifies misconfigured cloud buckets and exposed storage assets ([S3Scanner](https://github.com/sa7mon/S3Scanner) and [cloud_enum](https://github.com/initstring/cloud_enum)).
 - **Cloud Coverage Note**: Cloud bucket checks no longer include Alibaba OSS coverage after replacing CloudHunter with cloud_enum.
+- **Cloud Output Migration**: Legacy `cloudhunter_*` bucket artifacts were removed; use `subdomains/cloud_enum_buckets_trufflehog.txt` instead.
 - **Reverse IP Lookup**: Discovers subdomains via IP ranges ([hakip2host](https://github.com/hakluke/hakip2host)).
 
 ### Hosts
@@ -651,7 +652,7 @@ PASSWORD_DICT_ENGINE=cewler # cewler|pydictor
 PASSWORD_MIN_LENGTH=5 # Min password length
 PASSWORD_MAX_LENGTH=14 # Max password length
 KATANA_HEADLESS_PROFILE=off # off|smart|full
-CLOUD_ENUM_S3_PROFILE=optimized # optimized: quickscan (-qs, no -m/-b) | exhaustive: -m ${tools}/cloud_enum/enum_tools/fuzz.txt
+CLOUD_ENUM_S3_PROFILE=optimized # optimized: quickscan (-qs + safe -m/-b paths) | exhaustive: -m/-b ${tools}/cloud_enum/enum_tools/fuzz.txt (missing fuzz => optimized)
 CLOUD_ENUM_S3_THREADS=20 # Threads used by cloud_enum in s3buckets/cloud enumeration
 
 # Vulns

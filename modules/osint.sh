@@ -675,55 +675,11 @@ function cloud_enum_scan() {
         && [[ $CLOUD_ENUM == true ]] && [[ $OSINT == true ]] \
         && ! [[ $domain =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 
-        local cloud_enum_profile cloud_enum_mutations cloud_enum_quickscan cloud_enum_threads
-        local company_name
-        local -a cloud_enum_runtime_cmd cloud_enum_cmd
-        cloud_enum_profile=$(printf "%s" "${CLOUD_ENUM_S3_PROFILE:-optimized}" | tr '[:upper:]' '[:lower:]')
-        case "$cloud_enum_profile" in
-            optimized)
-                cloud_enum_mutations=""
-                cloud_enum_quickscan=true
-                ;;
-            exhaustive)
-                cloud_enum_mutations="${tools}/cloud_enum/enum_tools/fuzz.txt"
-                cloud_enum_quickscan=false
-                ;;
-            *)
-                cloud_enum_mutations=""
-                cloud_enum_quickscan=true
-                ;;
-        esac
-        cloud_enum_threads="${CLOUD_ENUM_S3_THREADS:-20}"
-        if [[ ! "$cloud_enum_threads" =~ ^[0-9]+$ ]] || [[ "$cloud_enum_threads" -le 0 ]]; then
-            cloud_enum_threads=20
-        fi
-
-        if ! resolve_cloud_enum_runtime cloud_enum_runtime_cmd; then
-            _print_msg WARN "${FUNCNAME[0]}: cloud_enum runtime not found (checked ${tools}/cloud_enum and PATH)"
-            return 0
-        fi
-        if [[ "$cloud_enum_quickscan" != true ]] && [[ ! -f "$cloud_enum_mutations" ]]; then
-            _print_msg WARN "${FUNCNAME[0]}: mutations list not found (${cloud_enum_mutations})"
-            return 0
-        fi
+        local -a cloud_enum_cmd
 
         start_func "${FUNCNAME[0]}" "Cloud storage enumeration"
-        company_name=$(unfurl format %r <<<"$domain")
-        cloud_enum_cmd=(
-            env PYTHONWARNINGS=ignore
-            "${cloud_enum_runtime_cmd[@]}"
-            -k "$company_name"
-            -k "$domain"
-            -k "${domain%%.*}"
-            -t "$cloud_enum_threads"
-        )
-        if [[ -f "$resolvers" ]]; then
-            cloud_enum_cmd+=(-nsf "$resolvers")
-        fi
-        if [[ "$cloud_enum_quickscan" == true ]]; then
-            cloud_enum_cmd+=(-qs)
-        else
-            cloud_enum_cmd+=(-m "$cloud_enum_mutations")
+        if ! build_cloud_enum_command cloud_enum_cmd "${FUNCNAME[0]}" "$domain"; then
+            return 0
         fi
 
         run_command "${cloud_enum_cmd[@]}" 2>>"$LOGFILE" | anew -q osint/cloud_enum.txt
