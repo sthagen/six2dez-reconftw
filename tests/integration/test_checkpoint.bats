@@ -41,7 +41,7 @@ source_reconftw() {
 }
 
 @test "checkpoint: multiple function markers can coexist" {
-    local funcs=("sub_passive" "sub_crt" "sub_active" "webprobe_simple")
+    local funcs=("sub_passive" "sub_crt" "sub_active" "webprobe_full")
     
     for func in "${funcs[@]}"; do
         touch "$called_fn_dir/.$func"
@@ -142,7 +142,7 @@ source_reconftw() {
 @test "resume: can clear all checkpoints" {
     touch "$called_fn_dir/.sub_passive"
     touch "$called_fn_dir/.sub_crt"
-    touch "$called_fn_dir/.webprobe_simple"
+    touch "$called_fn_dir/.webprobe_full"
     
     # Clear all
     rm -f "$called_fn_dir"/.??*

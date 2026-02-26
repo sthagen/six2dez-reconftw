@@ -78,6 +78,32 @@ source "${_INIT_SCRIPTPATH}/modules/vulns.sh"
 source "${_INIT_SCRIPTPATH}/modules/axiom.sh"
 source "${_INIT_SCRIPTPATH}/modules/modes.sh"
 
+# Normalize legacy-friendly AXIOM syntax:
+#   -v 20  -> -v --vps-count 20
+function normalize_vps_count_args() {
+    local -a raw_args=("$@")
+    local -a normalized_args=()
+    local idx=0
+    local current next
+
+    while ((idx < ${#raw_args[@]})); do
+        current="${raw_args[idx]}"
+        if [[ "$current" == "-v" ]]; then
+            next="${raw_args[idx+1]:-}"
+            if validate_integer "$next" 1; then
+                normalized_args+=("-v" "--vps-count" "$next")
+                idx=$((idx + 2))
+                continue
+            fi
+        fi
+
+        normalized_args+=("$current")
+        idx=$((idx + 1))
+    done
+
+    printf '%s\0' "${normalized_args[@]}"
+}
+
 # Allow sourcing functions without execution (for testing)
 # Must be checked before argument parsing to avoid side effects
 if [[ "${1:-}" == "--source-only" ]]; then
@@ -112,7 +138,9 @@ if [[ $OSTYPE == "darwin"* ]]; then
     PATH="$(brew --prefix gnu-sed)/libexec/gnubin:$PATH"
 fi
 
-PROGARGS=$(getopt -o 'd:m:l:x:i:o:f:q:c:zrspanwvyh' --long 'domain:,list:,recon,subdomains,passive,all,web,osint,zen,deep,help,vps,ai,check-tools,health-check,quick-rescan,incremental,adaptive-rate,dry-run,parallel,no-parallel,monitor,monitor-interval:,monitor-cycles:,refresh-cache,gen-resolvers,force,export:,report-only,no-report,parallel-log:,quiet,verbose,no-color,log-format:,show-cache,banner,no-banner,legal' -n 'reconFTW' -- "$@")
+CLI_ARGS=()
+mapfile -d '' -t CLI_ARGS < <(normalize_vps_count_args "$@")
+PROGARGS=$(getopt -o 'd:m:l:x:i:o:f:q:c:zrspanwvyh' --long 'domain:,list:,recon,subdomains,passive,all,web,osint,zen,deep,help,vps,vps-count:,ai,check-tools,health-check,quick-rescan,incremental,adaptive-rate,dry-run,parallel,no-parallel,monitor,monitor-interval:,monitor-cycles:,refresh-cache,gen-resolvers,force,export:,report-only,no-report,parallel-log:,quiet,verbose,no-color,log-format:,show-cache,banner,no-banner,legal' -n 'reconFTW' -- "${CLI_ARGS[@]}")
 
 exit_status=$?
 if [[ $exit_status -ne 0 ]]; then
@@ -124,6 +152,7 @@ fi
 eval set -- "$PROGARGS"
 unset PROGARGS
 CLI_PARALLEL_MODE=""
+CLI_AXIOM_FLEET_COUNT=""
 SHOW_CACHE=false
 SHOW_BANNER=false
 SHOW_LEGAL=false
@@ -276,6 +305,15 @@ while true; do
             }
             AXIOM=true
             shift
+            continue
+            ;;
+        '--vps-count')
+            if ! validate_integer "$2" 1; then
+                print_errorf "Invalid --vps-count value '%s' (must be an integer >= 1)" "$2"
+                exit 1
+            fi
+            CLI_AXIOM_FLEET_COUNT="$2"
+            shift 2
             continue
             ;;
         '-f')
@@ -494,6 +532,11 @@ if [[ -n "${CLI_LOG_FORMAT:-}" ]]; then
 fi
 if [[ -n "${CLI_NO_COLOR:-}" ]]; then
     NO_COLOR=1
+fi
+if [[ -n "${CLI_AXIOM_FLEET_COUNT:-}" ]]; then
+    AXIOM=true
+    AXIOM_FLEET_LAUNCH=true
+    AXIOM_FLEET_COUNT="${CLI_AXIOM_FLEET_COUNT}"
 fi
 if [[ "${LOG_FORMAT:-plain}" == "jsonl-strict" ]]; then
     # Machine-only output mode: suppress human-oriented rendering.

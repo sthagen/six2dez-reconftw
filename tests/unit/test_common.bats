@@ -186,6 +186,53 @@ EOF
     [[ "$output" == *"SKIP"* ]]
 }
 
+@test "skip_notification processed-visible renders SKIP with cache reason and cache marker" {
+    OUTPUT_VERBOSITY=1
+    SHOW_CACHE=false
+    mkdir -p "$called_fn_dir"
+
+    test_func() {
+        skip_notification "processed-visible"
+    }
+
+    run test_func
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"SKIP"* ]]
+    [[ "$output" == *"reason: cache"* ]]
+    [[ "$output" != *"CACHE"* ]]
+    [ -f "$called_fn_dir/.cache_test_func" ]
+    [ ! -f "$called_fn_dir/.skip_test_func" ]
+    [ -f "$called_fn_dir/.status_reason_test_func" ]
+    [ "$(cat "$called_fn_dir/.status_reason_test_func")" = "cache" ]
+}
+
+###############################################################################
+# output formatting tests
+###############################################################################
+
+@test "print_artifacts uses INFO Artifacts format without brackets" {
+    OUTPUT_VERBOSITY=1
+    bblue="<BLUE>"
+    reset="<RESET>"
+
+    run print_artifacts "osint/, subdomains/"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<BLUE>INFO<RESET> Artifacts: osint/, subdomains/"* ]]
+    [[ "$output" != *"[INFO] Artifacts"* ]]
+}
+
+@test "print_notice RUN uses cyan color for state" {
+    OUTPUT_VERBOSITY=1
+    cyan="<CYAN>"
+    reset="<RESET>"
+
+    run print_notice RUN "sub_brute" "bruteforcing subdomains"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"<CYAN>RUN  <RESET>"* ]]
+    [[ "$output" == *"sub_brute"* ]]
+    [[ "$output" == *"(bruteforcing subdomains)"* ]]
+}
+
 ###############################################################################
 # run_tool tests
 ###############################################################################

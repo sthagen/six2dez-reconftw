@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adaptive permutation wordlist: `PERMUTATIONS_WORDLIST_MODE=auto|full|short` with `PERMUTATIONS_SHORT_THRESHOLD=100`. Uses a curated 162-word list for large targets (>100 subs) and the full 849-word list for small targets or DEEP mode.
 - Auto-detection of DNS resolver: `DNS_RESOLVER=auto|puredns|dnsx`. Two-step heuristic: (1) public local IP → puredns, (2) cloud metadata endpoint (169.254.169.254) → puredns, otherwise → dnsx. Handles cloud VPS with private IPs (AWS, GCP, DO, etc.) correctly. Configurable with `DNSX_THREADS` and `DNSX_RATE_LIMIT`.
 - Global DNS resolution wrappers `_resolve_domains()` and `_bruteforce_domains()` in `modules/utils.sh` — all 16 puredns call sites now use these wrappers for consistent resolver selection.
+- Resolver hardening for subdomain brute/resolve: fail-fast when required resolver files are missing, stricter resolver downloads (`RESOLVER_DOWNLOAD_*`), and optional DNS hard-timeouts (`DNS_BRUTE_TIMEOUT`, `DNS_RESOLVE_TIMEOUT`, where `0` disables timeout) with heartbeat progress (`DNS_HEARTBEAT_INTERVAL_SECONDS`).
 - Cross-platform local IP detection via `_get_local_ip()` using default route (works on any macOS/Linux interface naming).
 - DNS permutation benchmark script `benchmark_dns_permutations.sh` for comparing gotator, alterx, and ripgen.
 - Built-in wordlists and patterns are now vendored in-repo under `data/` (wordlists: `data/wordlists/`, patterns: `data/patterns/`). Config exposes `DATA_DIR`, `WORDLISTS_DIR`, and `PATTERNS_DIR`.

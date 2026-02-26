@@ -438,8 +438,6 @@ function passive() {
     SUBREGEXPERMUTE=false
     # shellcheck disable=SC2034
     SUB_RECURSIVE_BRUTE=false
-    # shellcheck disable=SC2034
-    WEBPROBESIMPLE=false
     if [[ $AXIOM == true ]]; then
         axiom_launch
         axiom_selected
@@ -744,7 +742,6 @@ function recon() {
     progress_module "Subdomains"
 
     _print_section "Web Detection"
-    run_module_with_axiom_failover webprobe_simple
     run_module_with_axiom_failover webprobe_full
 
     if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null && ! axiom_runtime_enabled; then
@@ -941,7 +938,6 @@ function multi_recon() {
             exit 1
         }
         run_module_with_axiom_failover subdomains_full
-        run_module_with_axiom_failover webprobe_simple
         run_module_with_axiom_failover webprobe_full
         run_module_with_axiom_failover subtakeover
         remove_big_files
@@ -1136,7 +1132,6 @@ function subs_menu() {
     run_module_with_axiom_failover s3buckets
 
     _print_section "Web Detection"
-    run_module_with_axiom_failover webprobe_simple
     run_module_with_axiom_failover webprobe_full
     favirecon_tech
     run_module_with_axiom_failover screenshot
@@ -1152,7 +1147,6 @@ function subs_menu() {
 function webs_menu() {
     _print_section "Web Detection"
 
-    run_module_with_axiom_failover webprobe_simple
     run_module_with_axiom_failover webprobe_full
     favirecon_tech
     run_module_with_axiom_failover subtakeover
@@ -1198,7 +1192,6 @@ function zen_menu() {
     run_module_with_axiom_failover s3buckets
 
     _print_section "Web Detection"
-    run_module_with_axiom_failover webprobe_simple
     run_module_with_axiom_failover webprobe_full
     favirecon_tech
     run_module_with_axiom_failover screenshot
@@ -1364,7 +1357,7 @@ function report_only_mode() {
 function help() {
     pt_header "Usage"
     printf "\n Usage: %s [-d domain.tld] [-m name] [-l list.txt] [-x oos.txt] [-i in.txt] " "$0"
-    printf "\n           	      [-r] [-s] [-p] [-a] [-w] [-n] [-z] [-c] [-y] [-h] [-f] [--ai] [--deep] [--monitor] [--monitor-interval m] [--monitor-cycles n] [--report-only] [--refresh-cache] [--gen-resolvers] [--force] [--export fmt] [-o OUTPUT]\n\n"
+    printf "\n           	      [-r] [-s] [-p] [-a] [-w] [-n] [-z] [-c] [-y] [-h] [-f] [--ai] [--deep] [--monitor] [--monitor-interval m] [--monitor-cycles n] [--vps-count n] [--report-only] [--refresh-cache] [--gen-resolvers] [--force] [--export fmt] [-o OUTPUT]\n\n"
     printf " %bTARGET OPTIONS%b\n" "${bblue}" "${reset}"
     printf "   -d domain.tld     Target domain\n"
     printf "   -m company        Target company name\n"
@@ -1389,6 +1382,7 @@ function help() {
     printf "   -f config_file    Alternate reconftw.cfg file\n"
     printf "   -o output/path    Define output folder\n"
     printf "   -v, --vps         Axiom distributed VPS\n"
+    printf "   --vps-count n     Override Axiom fleet instances for this run (implies AXIOM)\n"
     printf "   -q                Rate limit in requests per second\n"
     printf "   --check-tools     Exit if one of the tools is missing\n"
     printf "   --health-check    Run system health check and exit\n"
@@ -1433,6 +1427,9 @@ function help() {
     printf " \n"
     printf " %bAnalyze ReconFTW results with AI:%b\n" "${byellow}" "${reset}"
     printf " ./reconftw.sh -d example.com -r --ai\n"
+    printf " \n"
+    printf " %bRun recon on Axiom with 30 instances:%b\n" "${byellow}" "${reset}"
+    printf " ./reconftw.sh -d example.com -r -v 30\n"
     printf " \n"
     printf " %bRun custom function:%b\n" "${byellow}" "${reset}"
     printf " ./reconftw.sh -d example.com -c nuclei_check \n"

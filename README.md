@@ -134,6 +134,7 @@ reconFTW is packed with features to make reconnaissance thorough and efficient. 
 - **DNS Zone Transfer**: Checks for misconfigured DNS zone transfers ([dig](https://linux.die.net/man/1/dig)).
 - **Cloud Buckets**: Identifies misconfigured cloud buckets and exposed storage assets ([S3Scanner](https://github.com/sa7mon/S3Scanner) and [cloud_enum](https://github.com/initstring/cloud_enum)).
 - **Cloud Coverage Note**: Cloud bucket checks no longer include Alibaba OSS coverage after replacing CloudHunter with cloud_enum.
+- **Cloud Output Migration**: Legacy `cloudhunter_*` bucket artifacts were removed; use `subdomains/cloud_enum_buckets_trufflehog.txt` instead.
 - **Reverse IP Lookup**: Discovers subdomains via IP ranges ([hakip2host](https://github.com/hakluke/hakip2host)).
 
 ### Hosts
@@ -433,6 +434,7 @@ The `reconftw.cfg` file controls the entire execution of reconFTW. It allows fin
 - **Automation & Data**: Control quick rescan heuristics, asset logging, chunk sizes, hotlists, and debug tracing (`QUICK_RESCAN`, `ASSET_STORE`, `CHUNK_LIMIT`, `HOTLIST_TOP`, `SHOW_COMMANDS`).
 - **Disk & Logging**: Pre-flight disk check (`MIN_DISK_SPACE_GB`), log rotation (`MAX_LOG_FILES`, `MAX_LOG_AGE_DAYS`), structured JSON logging (`STRUCTURED_LOGGING`).
 - **Caching**: Configure cache expiry for wordlists and resolvers (`CACHE_MAX_AGE_DAYS`).
+- **DNS Resolver Safety**: Missing resolver files fail fast, resolver downloads use configurable retry/timeout knobs (`RESOLVER_DOWNLOAD_*`), and DNS brute/resolve timeout defaults to disabled (`DNS_*_TIMEOUT=0`) with heartbeat progress.
 - **Secrets**: Use `secrets.cfg` for local overrides or environment variables for CI/Docker (see [SECURITY.md](SECURITY.md)).
 
 **Example Configuration**:
@@ -465,6 +467,10 @@ generate_resolvers=false # Generate custom resolvers with dnsvalidator
 update_resolvers=true # Fetch and rewrite resolvers from trickest/resolvers before DNS resolution
 resolvers_url="https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt"
 resolvers_trusted_url="https://gist.githubusercontent.com/six2dez/ae9ed7e5c786461868abd3f2344401b6/raw/trusted_resolvers.txt"
+RESOLVER_DOWNLOAD_CONNECT_TIMEOUT=10 # Seconds to wait for resolver download TCP connection
+RESOLVER_DOWNLOAD_MAX_TIME=120 # Hard cap in seconds for resolver downloads
+RESOLVER_DOWNLOAD_RETRY=2 # Retry count for resolver downloads
+RESOLVER_DOWNLOAD_RETRY_DELAY=2 # Delay in seconds between resolver download retries
 fuzzing_remote_list="https://raw.githubusercontent.com/six2dez/OneListForAll/main/onelistforallmicro.txt" # Used to send to axiom(if used) on fuzzing
 proxy_url="http://127.0.0.1:8080/" # Proxy url
 install_golang=true # Set it to false if you already have Golang configured and ready
@@ -593,11 +599,11 @@ TLS_PORTS="21,22,25,80,110,135,143,261,271,324,443,448,465,563,614,631,636,664,6
 INSCOPE=false # Uses inscope tool to filter the scope, requires .scope file in reconftw folder
 
 # Web detection
-WEBPROBESIMPLE=true # Web probing on 80/443
-WEBPROBEFULL=true # Web probing in a large port list
+WEBPROBEFULL=true # Unified web probing over configured ports
 WEBSCREENSHOT=true # Webs screenshooting
 VIRTUALHOSTS=false # Check virtualhosts by fuzzing HOST header
 UNCOMMON_PORTS_WEB="81,300,591,593,832,981,1010,1311,1099,2082,2095,2096,2480,3000,3001,3002,3003,3128,3333,4243,4567,4711,4712,4993,5000,5104,5108,5280,5281,5601,5800,6543,7000,7001,7396,7474,8000,8001,8008,8014,8042,8060,8069,8080,8081,8083,8088,8090,8091,8095,8118,8123,8172,8181,8222,8243,8280,8281,8333,8337,8443,8500,8834,8880,8888,8983,9000,9001,9043,9060,9080,9090,9091,9092,9200,9443,9502,9800,9981,10000,10250,11371,12443,15672,16080,17778,18091,18092,20720,32000,55440,55672"
+WEBPROBE_PORTS="80,443,${UNCOMMON_PORTS_WEB}" # Ports used by webprobe_full
 
 # Host
 FAVIRECON=true # Favicon-based technology recon for discovered web targets
@@ -640,13 +646,13 @@ FUZZ_RECURSION_DEPTH=2 # ffuf recursion depth used in DEEP mode
 IIS_SHORTNAME=true
 CMS_SCANNER=true # CMS scanner
 WORDLIST=true # Wordlist generation
-ROBOTSWORDLIST=true # Check historic disallow entries on waybackMachine
+ROBOTSWORDLIST=true # Check historic disallow entries on waybackMachine (DEEP mode only)
 PASSWORD_DICT=true # Generate password dictionary
 PASSWORD_DICT_ENGINE=cewler # cewler|pydictor
 PASSWORD_MIN_LENGTH=5 # Min password length
 PASSWORD_MAX_LENGTH=14 # Max password length
 KATANA_HEADLESS_PROFILE=off # off|smart|full
-CLOUD_ENUM_S3_PROFILE=optimized # optimized: quickscan (-qs, no -m/-b) | exhaustive: -m ${tools}/cloud_enum/enum_tools/fuzz.txt
+CLOUD_ENUM_S3_PROFILE=optimized # optimized: quickscan (-qs + safe -m/-b paths) | exhaustive: -m/-b ${tools}/cloud_enum/enum_tools/fuzz.txt (missing fuzz => optimized)
 CLOUD_ENUM_S3_THREADS=20 # Threads used by cloud_enum in s3buckets/cloud enumeration
 
 # Vulns
@@ -689,7 +695,6 @@ PROXY=false # Send to proxy the websites found
 SENDZIPNOTIFY=false # Send to zip the results (over notify)
 PRESERVE=true      # set to true to avoid deleting the .called_fn files on really large scans
 FFUF_FLAGS=" -mc all -fc 404 -sf -noninteractive -of json" # Ffuf flags
-HTTPX_FLAGS=" -follow-redirects -random-agent -status-code -silent -title -web-server -tech-detect -location -content-length" # Httpx flags for simple web probing
 
 # HTTP options
 HEADER="User-Agent: Mozilla/5.0 (X11; Linux x86_64; rv:72.0) Gecko/20100101 Firefox/72.0" # Default header
@@ -727,6 +732,9 @@ FFUF_MAXTIME=900                # Seconds
 HTTPX_TIMEOUT=10                # Seconds
 HTTPX_UNCOMMONPORTS_TIMEOUT=10  # Seconds
 PERMUTATIONS_LIMIT=21474836480  # Bytes, default is 20 GB
+DNS_BRUTE_TIMEOUT=0             # timeout/gtimeout duration for DNS bruteforce (0 disables hard-timeout, e.g. 4h)
+DNS_RESOLVE_TIMEOUT=0           # timeout/gtimeout duration for DNS resolve (0 disables hard-timeout, e.g. 6h)
+DNS_HEARTBEAT_INTERVAL_SECONDS=20 # Progress heartbeat interval for long DNS jobs
 
 # lists
 fuzz_wordlist=${WORDLISTS_DIR}/fuzz_wordlist.txt
@@ -816,8 +824,21 @@ byellow='\033[1;33m'
 red='\033[0;31m'
 blue='\033[0;34m'
 green='\033[0;32m'
+cyan='\033[0;36m'
 yellow='\033[0;33m'
 reset='\033[0m'
+```
+
+**DNS resolver guardrails**:
+
+- Missing/empty resolver files now fail fast before DNS brute/resolve starts.
+- Resolver downloads are configurable with `RESOLVER_DOWNLOAD_CONNECT_TIMEOUT`, `RESOLVER_DOWNLOAD_MAX_TIME`, `RESOLVER_DOWNLOAD_RETRY`, and `RESOLVER_DOWNLOAD_RETRY_DELAY`.
+- `DNS_BRUTE_TIMEOUT=0` and `DNS_RESOLVE_TIMEOUT=0` disable hard-timeout by default (recommended for very large target sets). Heartbeat progress still prints every `DNS_HEARTBEAT_INTERVAL_SECONDS`.
+
+```bash
+DNS_BRUTE_TIMEOUT=4h
+DNS_RESOLVE_TIMEOUT=6h
+DNS_HEARTBEAT_INTERVAL_SECONDS=20
 ```
 
 **Full Details**: See the [Configuration Guide](https://github.com/six2dez/reconftw/wiki/3.-Configuration-file).
@@ -860,6 +881,7 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
 | `-f`              | Custom configuration file path                           |
 | `-o`              | Output directory for results                             |
 | `-v`              | Enable Axiom distributed scanning                        |
+| `--vps-count`     | Override Axiom fleet instance count for this run         |
 | `-q`              | Set rate limit (requests per second)                     |
 | `-y`              | Enables AI results analysis                              |
 | `--check-tools`   | Exit if required tools are missing                       |
@@ -920,33 +942,39 @@ reconFTW supports multiple modes and options for flexible reconnaissance. Use th
    ./reconftw.sh -d target.com -r -v
    ```
 
-8. **Full Recon with Attacks (YOLO Mode)**:
+8. **Axiom Integration with fleet override**:
+
+   ```bash
+   ./reconftw.sh -d target.com -r -v 30
+   ```
+
+9. **Full Recon with Attacks (YOLO Mode)**:
 
    ```bash
    ./reconftw.sh -d target.com -a
    ```
 
-9. **Show Help**:
+10. **Show Help**:
    ```bash
    ./reconftw.sh -h
    ```
 
-10. **Force cache refresh**:
+11. **Force cache refresh**:
    ```bash
    ./reconftw.sh -d target.com -r --refresh-cache
    ```
 
-11. **Export all report artifacts**:
+12. **Export all report artifacts**:
    ```bash
    ./reconftw.sh -d target.com -r --export all
    ```
 
-12. **Continuous monitoring (every 30m, 48 cycles)**:
+13. **Continuous monitoring (every 30m, 48 cycles)**:
    ```bash
    ./reconftw.sh -d target.com -r --monitor --monitor-interval 30 --monitor-cycles 48
    ```
 
-13. **Rebuild reports only (no scan):**
+14. **Rebuild reports only (no scan):**
    ```bash
    ./reconftw.sh -d target.com --report-only --export all
    ```

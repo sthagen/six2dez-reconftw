@@ -11,7 +11,7 @@ Started: <TS>
 ── SUBDOMAINS ───────────────────────────────────────────────────────────────
 Started: <TS>
 OK    subdomains_full                              0s
-[INFO] verbose_marker
+INFO  verbose_marker
   Output: subdomains/, webs/
 
 Completed: <TS>
