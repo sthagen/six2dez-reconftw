@@ -14,36 +14,63 @@
 }
 
 function resolvers_update() {
+    local need_refresh=false
+    local resolvers_stale=false
+    local resolvers_trusted_stale=false
+
+    if [[ -s "$resolvers" ]] && [[ -n "$(find "$resolvers" -mtime +1 -print 2>/dev/null)" ]]; then
+        resolvers_stale=true
+    fi
+    if [[ -s "$resolvers_trusted" ]] && [[ -n "$(find "$resolvers_trusted" -mtime +1 -print 2>/dev/null)" ]]; then
+        resolvers_trusted_stale=true
+    fi
+    if [[ ! -s "$resolvers" ]] || [[ ! -s "$resolvers_trusted" ]] || [[ "$resolvers_stale" == true ]] || [[ "$resolvers_trusted_stale" == true ]]; then
+        need_refresh=true
+    fi
 
     if [[ $generate_resolvers == true ]]; then
         if [[ $AXIOM != true ]]; then
-            if [[ ! -s $resolvers ]] || [[ $(find "$resolvers" -mtime +1 -print) ]]; then
+            if [[ "$need_refresh" == true ]]; then
                 _print_msg WARN "Resolvers seem older than 1 day. Generating custom resolvers..."
                 {
                     rm -f -- "$resolvers"
-                    run_command dnsvalidator -tL https://public-dns.info/nameservers.txt -threads "$DNSVALIDATOR_THREADS" -o "$resolvers" >/dev/null
+                    run_command dnsvalidator -tL https://public-dns.info/nameservers.txt -threads "$DNSVALIDATOR_THREADS" -o "$resolvers" >/dev/null || return 1
                     run_command dnsvalidator -tL https://raw.githubusercontent.com/blechschmidt/massdns/master/lists/resolvers.txt -threads "$DNSVALIDATOR_THREADS" -o tmp_resolvers >/dev/null
                 } 2>>"$LOGFILE"
                 [ -s "tmp_resolvers" ] && cat tmp_resolvers | anew -q "$resolvers"
                 [ -s "tmp_resolvers" ] && rm -f tmp_resolvers 2>>"$LOGFILE" >/dev/null
-                [ ! -s "$resolvers" ] && run_command wget -q -O - "${resolvers_url}" >"$resolvers"
-                [ ! -s "$resolvers_trusted" ] && run_command wget -q -O - "${resolvers_trusted_url}" >"$resolvers_trusted"
+                if [[ ! -s "$resolvers" ]] && ! run_command wget -q -O - "${resolvers_url}" >"$resolvers"; then
+                    _print_msg WARN "Unable to download resolvers from ${resolvers_url}"
+                    return 1
+                fi
+                if [[ ! -s "$resolvers_trusted" ]] && ! run_command wget -q -O - "${resolvers_trusted_url}" >"$resolvers_trusted"; then
+                    _print_msg WARN "Unable to download trusted resolvers from ${resolvers_trusted_url}"
+                    return 1
+                fi
+                if [[ ! -s "$resolvers" ]] || [[ ! -s "$resolvers_trusted" ]]; then
+                    _print_msg WARN "Resolver files are missing or empty after update"
+                    return 1
+                fi
                 _print_msg OK "Updated resolvers"
             fi
         else
             _print_msg WARN "Checking resolvers lists. Accurate resolvers are key to good results. This may take around 10 minutes if outdated."
-            run_command axiom-exec "([[ \$(find \"${AXIOM_RESOLVERS_PATH}\" -mtime +1 -print) ]] || [[ \$(wc -l < \"${AXIOM_RESOLVERS_PATH}\") -le 40 ]]) && dnsvalidator -tL https://public-dns.info/nameservers.txt -threads 200 -o ${AXIOM_RESOLVERS_PATH}" &>/dev/null
-            run_command axiom-exec "wget -q -O - ${resolvers_url} > ${AXIOM_RESOLVERS_PATH}" 2>>"$LOGFILE" >/dev/null
-            run_command axiom-exec "wget -q -O - ${resolvers_trusted_url} > ${AXIOM_RESOLVERS_TRUSTED_PATH}" 2>>"$LOGFILE" >/dev/null
+            run_command axiom-exec "([[ \$(find \"${AXIOM_RESOLVERS_PATH}\" -mtime +1 -print) ]] || [[ \$(wc -l < \"${AXIOM_RESOLVERS_PATH}\") -le 40 ]]) && dnsvalidator -tL https://public-dns.info/nameservers.txt -threads 200 -o ${AXIOM_RESOLVERS_PATH}" &>/dev/null || return 1
+            run_command axiom-exec "wget -q -O - ${resolvers_url} > ${AXIOM_RESOLVERS_PATH}" 2>>"$LOGFILE" >/dev/null || return 1
+            run_command axiom-exec "wget -q -O - ${resolvers_trusted_url} > ${AXIOM_RESOLVERS_TRUSTED_PATH}" 2>>"$LOGFILE" >/dev/null || return 1
             _print_msg OK "Updated resolvers"
         fi
         generate_resolvers=false
     else
 
-        if [[ ! -s $resolvers ]] || [[ $(find "$resolvers" -mtime +1 -print) ]]; then
+        if [[ "$need_refresh" == true ]]; then
             _print_msg WARN "Resolvers seem older than 1 day. Downloading new resolvers..."
-            cached_download_typed "${resolvers_url}" "$resolvers" "resolvers.txt" "resolvers"
-            cached_download_typed "${resolvers_trusted_url}" "$resolvers_trusted" "resolvers_trusted.txt" "resolvers"
+            cached_download_typed "${resolvers_url}" "$resolvers" "resolvers.txt" "resolvers" || return 1
+            cached_download_typed "${resolvers_trusted_url}" "$resolvers_trusted" "resolvers_trusted.txt" "resolvers" || return 1
+            if [[ ! -s "$resolvers" ]] || [[ ! -s "$resolvers_trusted" ]]; then
+                _print_msg WARN "Resolver files are missing or empty after update"
+                return 1
+            fi
             _print_msg OK "Resolvers updated"
         fi
     fi

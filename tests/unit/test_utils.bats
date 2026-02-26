@@ -77,6 +77,13 @@ setup() {
     [[ "$output" == *"ERROR"* ]]
 }
 
+@test "validate_config fails on non-numeric AXIOM_FLEET_COUNT" {
+    export AXIOM_FLEET_COUNT="abc"
+    run validate_config
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"AXIOM_FLEET_COUNT must be numeric"* ]]
+}
+
 @test "validate_config accepts PERMUTATIONS_ENGINE=gotator without warning" {
     export PERMUTATIONS_ENGINE="gotator"
     run validate_config
@@ -347,4 +354,13 @@ EOF
     mark_missing_tools_warn_once "nuclei" "httpx"
 
     [ -z "${WARN_ONCE_KEYS[missing-tool-dnstake]:-}" ]
+}
+
+@test "format_pending_tools_message joins tools using comma regardless of IFS" {
+    local old_ifs="$IFS"
+    IFS=$'\n\t'
+    run format_pending_tools_message "cloud_enum" "dnstake"
+    IFS="$old_ifs"
+    [ "$status" -eq 0 ]
+    [ "$output" = "Pending tools: cloud_enum, dnstake" ]
 }

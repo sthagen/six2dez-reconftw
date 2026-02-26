@@ -324,7 +324,7 @@ ui_module_end() {
     ui_log_jsonl "INFO" "$module" "Module completed" "artifacts=${files_list}"
     ui_human_output_enabled || return 0
     if [[ $# -gt 0 ]]; then
-        printf "  %bOutput:%b %s\n\n" "${bblue:-}" "${reset:-}" "$files_list"
+        printf "  %bOutput: %s%b\n\n" "${bblue:-}" "$files_list" "${reset:-}"
     fi
     _print_module_end "$module"
 }
