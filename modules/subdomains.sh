@@ -1685,15 +1685,17 @@ function sub_recursive_brute() {
             fi
 
             for subdomain_top in $(cat .tmp/subdomains_recurs_top.txt); do
+                : > .tmp/brute_recursive_result_part.txt
                 if [[ $AXIOM != true ]]; then
                     _bruteforce_domains "$subs_wordlist" "$subdomain_top" .tmp/brute_recursive_result_part.txt
-                    cat .tmp/brute_recursive_result_part.txt | anew -q .tmp/brute_recursive.txt
                 else
                     run_command axiom-scan "$subs_wordlist" -m puredns-single "$subdomain_top" \
                         -r ${AXIOM_RESOLVERS_PATH} --resolvers-trusted ${AXIOM_RESOLVERS_TRUSTED_PATH} \
                         --wildcard-tests "$PUREDNS_WILDCARDTEST_LIMIT" --wildcard-batch "$PUREDNS_WILDCARDBATCH_LIMIT" \
                         -o .tmp/brute_recursive_result_part.txt $AXIOM_EXTRA_ARGS \
                         2>>"$LOGFILE" >/dev/null
+                fi
+                if [[ -s .tmp/brute_recursive_result_part.txt ]]; then
                     cat .tmp/brute_recursive_result_part.txt | anew -q .tmp/brute_recursive.txt
                 fi
             done
