@@ -3,6 +3,12 @@
 
 setup() {
     TEST_DIR=$(mktemp -d)
+    ORIG_PATH="$PATH"
+    ORIG_IFS="$IFS"
+    MOCK_BIN="$TEST_DIR/mockbin"
+    mkdir -p "$MOCK_BIN"
+    export PATH="$MOCK_BIN:$PATH"
+    IFS=$'\n\t'
     cd "$TEST_DIR" || exit 1
 
     # Minimal color vars
@@ -30,6 +36,9 @@ setup() {
     getElapsedTime() { runtime="0s"; }
     record_func_timing() { :; }
     log_json() { :; }
+    # Stubs for disk-full guard helpers (Plan 01-02) sourced from modules/utils.sh
+    _check_disk_mid_run() { return 0; }
+    _abort_disk_full() { return 0; }
 
     # Source common.sh (skip re-source guard)
     _COMMON_SH_LOADED=""
@@ -47,8 +56,18 @@ setup() {
 }
 
 teardown() {
+    PATH="$ORIG_PATH"
+    IFS="$ORIG_IFS"
     cd /
     rm -rf "$TEST_DIR"
+}
+
+create_mock_notify() {
+    cat >"$MOCK_BIN/notify" <<'EOF'
+#!/usr/bin/env bash
+cat >>"${NOTIFY_LOG}"
+EOF
+    chmod +x "$MOCK_BIN/notify"
 }
 
 ###############################################################################
@@ -81,6 +100,34 @@ teardown() {
     run notification "detail info" info
     [ "$status" -eq 0 ]
     [[ "$output" == *"detail info"* ]]
+}
+
+@test "notification sends suppressed messages to notify when enabled" {
+    create_mock_notify
+    export NOTIFY_LOG="$TEST_DIR/notify-suppressed.log"
+    NOTIFICATION=true
+    OUTPUT_VERBOSITY=1
+
+    run notification "hello world" info
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == "" ]]
+    [ -s "$NOTIFY_LOG" ]
+    grep -Fq "[INFO] hello world - test.com" "$NOTIFY_LOG"
+}
+
+@test "notification sends visible messages to notify when enabled" {
+    create_mock_notify
+    export NOTIFY_LOG="$TEST_DIR/notify-visible.log"
+    NOTIFICATION=true
+    OUTPUT_VERBOSITY=2
+
+    run notification "detail info" info
+
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"detail info"* ]]
+    [ -s "$NOTIFY_LOG" ]
+    grep -Fq "[INFO] detail info - test.com" "$NOTIFY_LOG"
 }
 
 ###############################################################################
@@ -135,4 +182,3 @@ teardown() {
     [ "$status" -eq 0 ]
     [[ "$output" != *"OK"* ]]
 }
-

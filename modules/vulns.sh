@@ -3,7 +3,7 @@
 # reconFTW - Vulnerability scanning module
 # Contains: xss, ssrf_checks, crlf_checks, lfi, ssti,
 #           sqli, test_ssl, spraying, command_injection, 4xxbypass,
-#           smuggling, webcache, fuzzparams, nuclei_dast
+#           smuggling, webcache, fuzzparams, nuclei_dast, fray_checks
 # This file is sourced by reconftw.sh - do not execute directly
 [[ -z "${SCRIPTPATH:-}" ]] && {
     echo "Error: This module must be sourced by reconftw.sh" >&2
@@ -238,6 +238,78 @@ function crlf_checks() {
 
 }
 
+_lfi_emit_single_param_candidates() {
+    local url="$1"
+    [[ "$url" == *"?"* ]] || return 0
+
+    local base="${url%%\?*}"
+    local query_and_fragment="${url#*\?}"
+    local query="$query_and_fragment"
+    local fragment=""
+
+    if [[ "$query_and_fragment" == *"#"* ]]; then
+        query="${query_and_fragment%%#*}"
+        fragment="#${query_and_fragment#*#}"
+    fi
+    [[ -n "$query" ]] || return 0
+
+    local IFS='&'
+    local -a params=()
+    read -r -a params <<<"$query"
+    [[ ${#params[@]} -gt 0 ]] || return 0
+
+    local -A seen=()
+    local idx j param key rebuilt other_param other_key new_param
+    for idx in "${!params[@]}"; do
+        param="${params[$idx]}"
+        key="${param%%=*}"
+        [[ -n "$key" ]] || continue
+        if [[ -n "${seen[$key]+x}" ]]; then
+            continue
+        fi
+        seen["$key"]=1
+
+        rebuilt=""
+        for j in "${!params[@]}"; do
+            other_param="${params[$j]}"
+            other_key="${other_param%%=*}"
+            if [[ "$other_key" == "$key" ]]; then
+                new_param="${other_key}=FUZZ"
+            else
+                new_param="$other_param"
+            fi
+
+            if [[ -n "$rebuilt" ]]; then
+                rebuilt="${rebuilt}&${new_param}"
+            else
+                rebuilt="$new_param"
+            fi
+        done
+
+        [[ -n "$rebuilt" ]] && printf "%s?%s%s\n" "$base" "$rebuilt" "$fragment"
+    done
+}
+
+_lfi_prepare_candidates() {
+    local input_file="$1"
+    local output_file="$2"
+    local all_candidates=".tmp/tmp_lfi_all.txt"
+    : >"$all_candidates"
+    : >"$output_file"
+
+    while IFS= read -r url || [[ -n "$url" ]]; do
+        [[ -z "$url" ]] && continue
+        _lfi_emit_single_param_candidates "$url"
+    done <"$input_file" | sort -u >"$all_candidates"
+
+    cat "$all_candidates" >"$output_file"
+
+    if [[ "${LFI_MAX_URLS:-0}" -gt 0 ]] && [[ -s "$output_file" ]]; then
+        head -n "${LFI_MAX_URLS}" "$output_file" >"${output_file}.limited"
+        mv "${output_file}.limited" "$output_file"
+    fi
+}
+
 function lfi() {
 
     # Create necessary directories
@@ -253,8 +325,12 @@ function lfi() {
         if [[ -s "gf/lfi.txt" ]]; then
             _print_msg INFO "Running: LFI Payload Generation"
 
-            # Process lfi.txt with qsreplace and filter lines containing 'FUZZ'
-            run_command qsreplace "FUZZ" <"gf/lfi.txt" | sed '/FUZZ/!d' | anew -q ".tmp/tmp_lfi.txt"
+            # Generate one candidate per parameter and prioritize likely LFI sinks first.
+            _lfi_prepare_candidates "gf/lfi.txt" ".tmp/tmp_lfi.txt"
+            if [[ ! -s ".tmp/tmp_lfi.txt" ]]; then
+                end_func "No per-parameter LFI candidates generated." "${FUNCNAME[0]}" "SKIP_NOINPUT"
+                return 0
+            fi
 
             # Determine whether to proceed based on DEEP flag or number of URLs
             URL_COUNT=$(wc -l <".tmp/tmp_lfi.txt")
@@ -262,9 +338,46 @@ function lfi() {
 
                 _print_msg INFO "Running: LFI Fuzzing with FFUF"
 
-                # Use Interlace to parallelize FFUF scanning
-                run_command interlace -tL ".tmp/tmp_lfi.txt" -threads "$INTERLACE_THREADS" -c "ffuf -v -r -t ${FFUF_THREADS} -rate ${FFUF_RATELIMIT} -H \"${HEADER}\" -w \"${lfi_wordlist}\" -u \"_target_\" -mr \"root:\" " 2>>"$LOGFILE" \
+                local lfi_interlace_threads="${LFI_INTERLACE_THREADS:-4}"
+                local lfi_ffuf_threads="${LFI_FFUF_THREADS:-20}"
+                local lfi_ffuf_rate="${LFI_FFUF_RATELIMIT:-50}"
+                local lfi_ffuf_timeout="${LFI_FFUF_TIMEOUT:-10}"
+                local lfi_ffuf_maxtime="${LFI_FFUF_MAXTIME:-90}"
+                local lfi_follow_redirects="${LFI_FOLLOW_REDIRECTS:-false}"
+                local lfi_redirect_flag=""
+                [[ "$lfi_follow_redirects" == true ]] && lfi_redirect_flag="-r"
+
+                # argv-safe parallel replacement for interlace -c. Each ffuf runs in a
+                # background subshell, writing its output to a per-target temp file;
+                # outputs are merged once all workers complete. Concurrency capped at
+                # lfi_interlace_threads (same as the removed `interlace -threads`).
+                local -a _lfi_ffuf_args
+                _lfi_ffuf_args=(-v -noninteractive)
+                [[ -n "$lfi_redirect_flag" ]] && _lfi_ffuf_args+=("$lfi_redirect_flag")
+                _lfi_ffuf_args+=(
+                    -t "$lfi_ffuf_threads"
+                    -rate "$lfi_ffuf_rate"
+                    -timeout "$lfi_ffuf_timeout"
+                    -maxtime "$lfi_ffuf_maxtime"
+                    -H "$HEADER"
+                    -w "$lfi_wordlist"
+                    -mr "root:x:"
+                )
+                local _lfi_parts
+                _lfi_parts=$(mktemp -d)
+                while IFS= read -r _lfi_target; do
+                    [[ -z "$_lfi_target" ]] && continue
+                    (
+                        _lfi_hash=$(printf '%s' "$_lfi_target" | sha256sum | cut -d' ' -f1)
+                        ffuf "${_lfi_ffuf_args[@]}" -u "$_lfi_target" \
+                            >"$_lfi_parts/$_lfi_hash" 2>>"$LOGFILE" || true
+                    ) &
+                    _throttle_jobs "$lfi_interlace_threads"
+                done <".tmp/tmp_lfi.txt"
+                wait
+                cat "$_lfi_parts"/* 2>/dev/null \
                     | grep "URL" | sed 's/| URL | //' | anew -q "vulns/lfi.txt"
+                rm -rf "$_lfi_parts"
 
                 end_func "Results are saved in vulns/lfi.txt" "${FUNCNAME[0]}"
             else
@@ -424,8 +537,20 @@ function sqli() {
                 if [[ $GHAURI == true ]]; then
                     _print_msg INFO "Running: Ghauri for SQLi Checks"
                     mkdir -p .tmp/ghauri_parts
-                    run_command interlace -tL ".tmp/tmp_sqli.txt" -threads "$INTERLACE_THREADS" -c "ghauri -u _target_ --batch -H \"${HEADER}\" --force-ssl >> .tmp/ghauri_parts/_cleantarget_.txt" 2>>"$LOGFILE" >/dev/null
-                    # Merge per-target outputs to avoid concurrent write corruption
+                    # argv-safe parallel replacement for interlace -c. Each target runs
+                    # ghauri in a background subshell writing to its own per-target file.
+                    while IFS= read -r _sqli_target; do
+                        [[ -z "$_sqli_target" ]] && continue
+                        (
+                            _sqli_safe=$(printf '%s' "$_sqli_target" | sha256sum | cut -d' ' -f1)
+                            ghauri -u "$_sqli_target" --batch -H "$HEADER" --force-ssl \
+                                >".tmp/ghauri_parts/${_sqli_safe}.txt" 2>>"$LOGFILE" || true
+                        ) &
+                        _throttle_jobs "${INTERLACE_THREADS:-10}"
+                    done <".tmp/tmp_sqli.txt"
+                    wait
+                    # Merge per-target outputs (each process writes its own file, so
+                    # there is no concurrent-write corruption).
                     cat .tmp/ghauri_parts/*.txt 2>/dev/null | anew -q vulns/ghauri_log.txt || true
                     rm -rf .tmp/ghauri_parts
                 fi
@@ -980,6 +1105,74 @@ function nuclei_dast() {
         end_func "Results are saved in nuclei_output/dast_json.txt and vulns/nuclei_dast.txt" "${FUNCNAME[0]}"
     else
         if [[ "$dast_enabled" == false ]]; then
+            skip_notification "disabled"
+        else
+            skip_notification "processed"
+        fi
+    fi
+}
+
+function fray_checks() {
+
+    # Create necessary directories
+    if ! ensure_dirs .tmp vulns; then return 1; fi
+
+    if { [[ ! -f "$called_fn_dir/.${FUNCNAME[0]}" ]] || [[ $DIFF == true ]]; } && [[ $FRAY_EXTRA == true ]]; then
+        if ! command -v fray >/dev/null 2>&1; then
+            _print_msg WARN "${FUNCNAME[0]}: fray not found in PATH"
+            return 0
+        fi
+        start_func "${FUNCNAME[0]}" "Fray WAF-aware payload testing"
+
+        ensure_webs_all || true
+
+        if [[ -s "webs/webs_all.txt" ]]; then
+            local _targets="webs/webs_all.txt"
+
+            # Apply DEEP_LIMIT gate
+            if [[ $DEEP != true ]]; then
+                local _count
+                _count=$(wc -l < "$_targets" | tr -d ' ')
+                if (( _count > DEEP_LIMIT )); then
+                    head -n "$DEEP_LIMIT" "$_targets" > .tmp/fray_targets.txt
+                    _targets=".tmp/fray_targets.txt"
+                    _print_msg INFO "Limiting Fray to ${DEEP_LIMIT} targets (DEEP mode disabled)"
+                fi
+            fi
+
+            local total_findings=0
+
+            IFS=',' read -ra _fray_categories <<< "$FRAY_CATEGORIES"
+            for _fcat in "${_fray_categories[@]}"; do
+                _print_msg INFO "Fray testing category: ${_fcat}"
+
+                cat "$_targets" | fray test -c "$_fcat" \
+                    --max "${FRAY_MAX_PAYLOADS:-20}" \
+                    -t "${FRAY_TIMEOUT:-10}" \
+                    -d "${FRAY_DELAY:-0.5}" \
+                    --json 2>>"$LOGFILE" | grep '^{' > ".tmp/fray_${_fcat}.json" || true
+
+                # Extract targets with bypasses from JSONL output
+                if [[ -s ".tmp/fray_${_fcat}.json" ]]; then
+                    jq -r 'select(.bypassed != null and .bypassed > 0) |
+                        "\(.target) [bypass_rate:\(.bypass_rate)] \(.bypassed)/\(.total) payloads bypassed WAF"' \
+                        ".tmp/fray_${_fcat}.json" >> "vulns/fray_${_fcat}.txt" 2>/dev/null || true
+
+                    if [[ -s "vulns/fray_${_fcat}.txt" ]]; then
+                        local _cat_count
+                        _cat_count=$(wc -l < "vulns/fray_${_fcat}.txt" | tr -d ' ')
+                        total_findings=$((total_findings + _cat_count))
+                        append_assets_from_file finding value "vulns/fray_${_fcat}.txt"
+                    fi
+                fi
+            done
+
+            end_func "${total_findings} Fray findings saved in vulns/fray_*.txt" "${FUNCNAME[0]}"
+        else
+            end_func "No websites to scan" "${FUNCNAME[0]}"
+        fi
+    else
+        if [[ $FRAY_EXTRA == false ]]; then
             skip_notification "disabled"
         else
             skip_notification "processed"

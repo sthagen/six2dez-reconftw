@@ -23,6 +23,87 @@ PARALLEL_TRACE_SLOW_SECONDS="${PARALLEL_TRACE_SLOW_SECONDS:-30}"
 declare -a _PARALLEL_PIDS=()
 _PARALLEL_LAST_BADGE=""
 
+###############################################################################
+# Background-job throttle used by modules/{web,vulns,osint}.sh to parallelise
+# per-target loops that replaced `interlace -c` (removed in the Naxus audit
+# fix for command injection). Each iteration launches a subshell in the
+# background; this helper blocks until the running-job count falls below the
+# requested cap. Requires bash 4.3+ for `wait -n`.
+###############################################################################
+_throttle_jobs() {
+    local max="${1:-4}"
+    # Clamp to sane minimum so a misconfigured var doesn't busy-spawn.
+    [[ "$max" =~ ^[0-9]+$ ]] || max=4
+    (( max < 1 )) && max=1
+
+    while (( $(jobs -rp | wc -l) >= max )); do
+        wait -n 2>/dev/null || break
+    done
+}
+
+# Recursively signal a process and all its descendants. Used by
+# _timeout_kill_job to kill the actual external tool (puredns, dnsx, ffuf,
+# axiom-scan, etc.) inside the parallel_funcs wrapper subshell, not just
+# the wrapper itself (CR-03 fix). Walks the process tree via `pgrep -P`
+# which is available on both Linux (procps) and macOS (BSD pgrep). If
+# pgrep is missing on the host, the walk degrades gracefully to a
+# wrapper-only kill (matches pre-patch behavior) so the run does not fail.
+# Process-group kill via `kill -- -<pgid>` was rejected because start() at
+# modules/modes.sh:16 explicitly disables job control (`set +m`), so the
+# wrapper subshell does not get its own pgid; flipping `set -m` for one
+# corner case is intrusive across the codebase.
+function _kill_tree() {
+    local parent="$1" sig="${2:-TERM}"
+    local child
+    # Recurse into children first so deeper leaves get signaled before the
+    # parent — protects against a parent re-spawning children on signal.
+    if command -v pgrep >/dev/null 2>&1; then
+        for child in $(pgrep -P "$parent" 2>/dev/null); do
+            _kill_tree "$child" "$sig"
+        done
+    fi
+    kill "-$sig" "$parent" 2>/dev/null || true
+}
+
+# Kill a parallel job that has exceeded PARALLEL_JOB_TIMEOUT_SECONDS.
+# Usage: _timeout_kill_job <pid> <func_name> <duration_sec>
+# Sends SIGTERM, polls every second up to PARALLEL_KILL_GRACE_SECONDS, then SIGKILL
+# if still alive. Persists FAIL + reason=timeout to the same .status_<fn> /
+# .status_reason_<fn> files end_func writes, so _parallel_emit_job_output renders
+# the timeout reason on the FAIL badge without any schema extension.
+# Uses 'function' keyword per CONVENTIONS.md §Function Naming; sibling helpers in
+# this file that omit it predate the rule and are a Phase 5 DOCS-01 followup, not
+# a precedent for new code.
+function _timeout_kill_job() {
+    local pid="$1" func_name="$2" duration_sec="$3"
+    local grace="${PARALLEL_KILL_GRACE_SECONDS:-10}"
+    [[ "$grace" =~ ^[0-9]+$ ]] || grace=10
+
+    # D-13: TERM first, then KILL after grace seconds for tools that ignore TERM.
+    # CR-03 fix: kill the entire process tree under the wrapper PID so the actual
+    # external tool (puredns, dnsx, ffuf, axiom-scan, etc.) terminates — not just
+    # the wrapper subshell. Pre-patch behavior signaled only $pid (the wrapper),
+    # leaving the tool orphaned to PID 1 and continuing past the timeout.
+    _kill_tree "$pid" TERM
+    local i
+    for ((i=0; i<grace; i++)); do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 1
+    done
+    _kill_tree "$pid" KILL
+
+    # D-14: persist FAIL + reason=timeout via the same pattern as modules/core.sh:1505-1509.
+    if [[ -n "${called_fn_dir:-}" ]]; then
+        printf "FAIL\n" >"${called_fn_dir}/.status_${func_name}" 2>/dev/null || true
+        printf "timeout\n" >"${called_fn_dir}/.status_reason_${func_name}" 2>/dev/null || true
+    fi
+
+    # Structured log; no-op when STRUCTURED_LOGGING != true (modules/core.sh:680).
+    if declare -F log_json >/dev/null 2>&1; then
+        log_json "ERROR" "${func_name}" "Job timed out" "reason=timeout" "duration_sec=${duration_sec}"
+    fi
+}
+
 _parallel_live_break() {
     if declare -F ui_live_progress_break >/dev/null 2>&1; then
         ui_live_progress_break
@@ -240,7 +321,7 @@ _parallel_emit_job_output() {
                     printf "         %s\n" "$line"
                 done
             fi
-            if [[ -n "$reason_code" ]] && { [[ "$badge" == "SKIP" ]] || { [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; }; }; then
+            if [[ -n "$reason_code" ]] && { [[ "$badge" == "SKIP" ]] || [[ "$badge" == "FAIL" ]] || { [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; }; }; then
                 printf "         reason: %s\n" "$reason_code"
             fi
             ;;
@@ -258,7 +339,7 @@ _parallel_emit_job_output() {
             if [[ -s "$log_file" ]]; then
                 tail -n "$show_lines" "$log_file" | strip_ansi_stream
             fi
-            if [[ -n "$reason_code" ]] && { [[ "$badge" == "SKIP" ]] || { [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; }; }; then
+            if [[ -n "$reason_code" ]] && { [[ "$badge" == "SKIP" ]] || [[ "$badge" == "FAIL" ]] || { [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; }; }; then
                 printf "         reason: %s\n" "$reason_code"
             fi
             ;;
@@ -274,7 +355,7 @@ _parallel_emit_job_output() {
             if [[ -s "$log_file" ]]; then
                 cat "$log_file" | strip_ansi_stream
             fi
-            if [[ -n "$reason_code" ]] && { [[ "$badge" == "SKIP" ]] || { [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; }; }; then
+            if [[ -n "$reason_code" ]] && { [[ "$badge" == "SKIP" ]] || [[ "$badge" == "FAIL" ]] || { [[ "$badge" == "CACHE" ]] && [[ "${SHOW_CACHE:-false}" == "true" ]]; }; }; then
                 printf "         reason: %s\n" "$reason_code"
             fi
             ;;
@@ -412,8 +493,19 @@ parallel_funcs() {
             fi
 
             # Heartbeat while long-running jobs are executing, to avoid "stuck" perception.
+            # Loop runs when EITHER timeout enforcement is active OR verbose progress is on;
+            # snapshots fire only when verbose progress is on. Decoupled per CR-02 fix so
+            # PARALLEL_JOB_TIMEOUT_SECONDS works under --quiet (the documented CI scenario at
+            # reconftw.cfg:317).
             local hb="${PARALLEL_HEARTBEAT_SECONDS:-20}"
-            if [[ "${PARALLEL_MODE:-true}" == "true" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]] && [[ "$hb" =~ ^[0-9]+$ ]] && ((hb > 0)); then
+            local _to="${PARALLEL_JOB_TIMEOUT_SECONDS:-0}"
+            [[ "$_to" =~ ^[0-9]+$ ]] || _to=0
+            local _verbose_progress=false
+            [[ "${PARALLEL_MODE:-true}" == "true" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]] && _verbose_progress=true
+            # NB: PARALLEL_HEARTBEAT_SECONDS=0 disables the loop entirely, which also disables timeout enforcement. WR-05 documented this; resolve in Phase 5 DOCS-01 if it surfaces in practice.
+            local _loop_active=false
+            [[ "${PARALLEL_MODE:-true}" == "true" ]] && [[ "$hb" =~ ^[0-9]+$ ]] && ((hb > 0)) && _loop_active=true
+            if [[ "$_loop_active" == "true" ]] && { [[ "$_verbose_progress" == "true" ]] || (( _to > 0 )); }; then
                 local last_hb now alive hb_active_list job_dur dur_fmt queue_count batch_elapsed hb_done_count
                 last_hb=$(date +%s)
                 while :; do
@@ -425,6 +517,11 @@ parallel_funcs() {
                         if kill -0 "${batch_pids[$idx]}" 2>/dev/null; then
                             alive=1
                             job_dur=$((now - batch_starts[$idx]))
+                            # Timeout enforcement (RESIL-03 / D-11..D-14): fires regardless of
+                            # verbosity (CR-02 fix). Uses hoisted _to from outer scope.
+                            if (( _to > 0 )) && (( job_dur > _to )); then
+                                _timeout_kill_job "${batch_pids[$idx]}" "${batch_funcs[$idx]}" "$job_dur"
+                            fi
                             dur_fmt=$(format_duration "$job_dur")
                             if [[ -z "$hb_active_list" ]]; then
                                 hb_active_list="${batch_funcs[$idx]} ${dur_fmt}"
@@ -436,7 +533,7 @@ parallel_funcs() {
                         fi
                     done
                     ((alive == 0)) && break
-                    if ((now - last_hb >= hb)); then
+                    if [[ "$_verbose_progress" == "true" ]] && ((now - last_hb >= hb)); then
                         queue_count=$((total_funcs - queued_count))
                         batch_elapsed=$((now - batch_start_ts))
                         _parallel_snapshot "${hb_active_list:-none}" "$done_list" "$queue_count" "$hb_done_count" "${#batch_pids[@]}" "$batch_elapsed"
@@ -516,8 +613,20 @@ parallel_funcs() {
             _parallel_snapshot "$active_list" "$done_list" "$queue_count" "0" "${#batch_pids[@]}" "0"
         fi
 
+        # Heartbeat while long-running jobs are executing, to avoid "stuck" perception.
+        # Loop runs when EITHER timeout enforcement is active OR verbose progress is on;
+        # snapshots fire only when verbose progress is on. Decoupled per CR-02 fix so
+        # PARALLEL_JOB_TIMEOUT_SECONDS works under --quiet (the documented CI scenario at
+        # reconftw.cfg:317).
         local hb="${PARALLEL_HEARTBEAT_SECONDS:-20}"
-        if [[ "${PARALLEL_MODE:-true}" == "true" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]] && [[ "$hb" =~ ^[0-9]+$ ]] && ((hb > 0)); then
+        local _to="${PARALLEL_JOB_TIMEOUT_SECONDS:-0}"
+        [[ "$_to" =~ ^[0-9]+$ ]] || _to=0
+        local _verbose_progress=false
+        [[ "${PARALLEL_MODE:-true}" == "true" ]] && [[ "${OUTPUT_VERBOSITY:-1}" -ge 1 ]] && _verbose_progress=true
+        # NB: PARALLEL_HEARTBEAT_SECONDS=0 disables the loop entirely, which also disables timeout enforcement. WR-05 documented this; resolve in Phase 5 DOCS-01 if it surfaces in practice.
+        local _loop_active=false
+        [[ "${PARALLEL_MODE:-true}" == "true" ]] && [[ "$hb" =~ ^[0-9]+$ ]] && ((hb > 0)) && _loop_active=true
+        if [[ "$_loop_active" == "true" ]] && { [[ "$_verbose_progress" == "true" ]] || (( _to > 0 )); }; then
             local last_hb now alive hb_active_list job_dur dur_fmt queue_count batch_elapsed hb_done_count
             last_hb=$(date +%s)
             while :; do
@@ -529,6 +638,11 @@ parallel_funcs() {
                     if kill -0 "${batch_pids[$idx]}" 2>/dev/null; then
                         alive=1
                         job_dur=$((now - batch_starts[$idx]))
+                        # Timeout enforcement (RESIL-03 / D-11..D-14): fires regardless of
+                        # verbosity (CR-02 fix). Uses hoisted _to from outer scope.
+                        if (( _to > 0 )) && (( job_dur > _to )); then
+                            _timeout_kill_job "${batch_pids[$idx]}" "${batch_funcs[$idx]}" "$job_dur"
+                        fi
                         dur_fmt=$(format_duration "$job_dur")
                         if [[ -z "$hb_active_list" ]]; then
                             hb_active_list="${batch_funcs[$idx]} ${dur_fmt}"
@@ -540,7 +654,7 @@ parallel_funcs() {
                     fi
                 done
                 ((alive == 0)) && break
-                if ((now - last_hb >= hb)); then
+                if [[ "$_verbose_progress" == "true" ]] && ((now - last_hb >= hb)); then
                     queue_count=$((total_funcs - queued_count))
                     batch_elapsed=$((now - batch_start_ts))
                     _parallel_snapshot "${hb_active_list:-none}" "$done_list" "$queue_count" "$hb_done_count" "${#batch_pids[@]}" "$batch_elapsed"

@@ -30,6 +30,89 @@ function deleteOutScoped() {
     fi
 }
 
+# Callers (apileaks, jschecks) run sequentially (OSINT phase then Web phase).
+# If future changes run callers in parallel, add file locking around the anew+p1radup section.
+function merge_scoped_urls_into_url_extract() {
+    local source_file="$1"
+    local source_label="${2:-url source}"
+    local raw_file=".tmp/${source_label}_urls_raw.txt"
+    local scoped_file=".tmp/${source_label}_urls_scoped.txt"
+    local normalized_file=".tmp/${source_label}_urls_normalized.txt"
+    local query_file=".tmp/${source_label}_urls_query.txt"
+    local plain_file=".tmp/${source_label}_urls_plain.txt"
+    local domain_regex
+    local added_count=0
+
+    [[ ! -s "$source_file" ]] && return 0
+
+    trap 'rm -f "$raw_file" "$scoped_file" "$normalized_file" "$query_file" "$plain_file" 2>/dev/null' RETURN
+
+    ensure_dirs .tmp webs || return 1
+    domain_regex=$(domain_match_regex "$domain")
+    : >"$raw_file"
+    : >"$scoped_file"
+    : >"$normalized_file"
+    : >"$query_file"
+    : >"$plain_file"
+
+    grep -aEo 'https?://[^ ]+' "$source_file" \
+        | sed -E 's/[[:space:]]+$//' \
+        | sed -E 's/[),;]$//' \
+        | sed 's/"$//' \
+        | sed "s/'$//" \
+        | sort -u >"$raw_file" 2>/dev/null || true
+
+    if [[ -s "$raw_file" ]]; then
+        awk -v re="$domain_regex" -F/ '
+            /^https?:\/\// {
+                h=$3
+                sub(/:.*/, "", h)
+                if (h ~ re) print
+            }
+        ' "$raw_file" >"$scoped_file" 2>/dev/null || true
+    fi
+
+    if [[ -n "${outOfScope_file:-}" ]] && [[ -s "$outOfScope_file" ]] && [[ -s "$scoped_file" ]]; then
+        deleteOutScoped "$outOfScope_file" "$scoped_file" || true
+    fi
+
+    if [[ "${INSCOPE:-false}" == true ]] && [[ -s "$scoped_file" ]]; then
+        if ! check_inscope "$scoped_file" 2>>"$LOGFILE" >/dev/null; then
+            print_warnf "check_inscope command failed."
+        fi
+    fi
+
+    [[ ! -s "$scoped_file" ]] && return 0
+
+    awk '/\?/{print > q} !/\?/{print > p}' q="$query_file" p="$plain_file" "$scoped_file"
+    if command -v urless >/dev/null 2>&1 && [[ -s "$query_file" ]]; then
+        urless <"$query_file" >"$normalized_file" 2>>"$LOGFILE" || true
+    else
+        cat "$query_file" >"$normalized_file" 2>/dev/null || true
+    fi
+    [[ -s "$plain_file" ]] && cat "$plain_file" >>"$normalized_file"
+    sort -u "$normalized_file" -o "$normalized_file" 2>/dev/null || true
+
+    if [[ -s "$normalized_file" ]]; then
+        if ! added_count=$(anew webs/url_extract.txt <"$normalized_file" | sed '/^$/d' | wc -l | tr -d ' '); then
+            added_count=0
+        fi
+        [[ "$added_count" =~ ^[0-9]+$ ]] || added_count=0
+
+        if [[ "$added_count" -gt 0 ]]; then
+            if [[ "${ASSET_STORE:-false}" == "true" ]]; then
+                append_assets_from_file url value webs/url_extract.txt
+            fi
+            if command -v p1radup >/dev/null 2>&1; then
+                p1radup -i webs/url_extract.txt -o webs/url_extract_nodupes.txt -s 2>>"$LOGFILE" >/dev/null || true
+            else
+                sort -u webs/url_extract.txt >webs/url_extract_nodupes.txt 2>>"$LOGFILE" || true
+            fi
+            notification "${source_label}: ${added_count} scoped URLs merged" "info"
+        fi
+    fi
+}
+
 function cleanup_on_exit() {
     local exit_code="${1:-130}"
     printf "\n%b[%s] Interrupted. Cleaning up...%b\n" "$bred" "$(date +'%Y-%m-%d %H:%M:%S')" "$reset"
@@ -58,8 +141,19 @@ function cleanup_on_exit() {
     
     # Log the interruption
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] Interrupted by signal (exit code: $exit_code)" >>"${LOGFILE:-/dev/null}"
-    
+
     exit "$exit_code"
+}
+
+# Remove stale .inprogress_<fn> sentinels on EXIT (D-02 clean-exit-only).
+# Gated on _RECON_CLEAN_EXIT: only sweeps when the workflow's end() set the
+# flag (clean traversal). SIGINT/SIGTERM via cleanup_on_exit does NOT set the
+# flag, so the sentinel survives and the next run's resume banner fires
+# (CR-01 fix; closes SC1 indicator gap from 01-VERIFICATION.md).
+function _cleanup_inprogress() {
+    [[ "${_RECON_CLEAN_EXIT:-false}" == "true" ]] || return 0
+    [[ -n "${called_fn_dir:-}" ]] && rm -f "${called_fn_dir}"/.inprogress_* 2>/dev/null
+    return 0
 }
 
 function rotate_logs() {
@@ -352,6 +446,19 @@ function check_disk_space() {
     return 0
 }
 
+# Mid-run disk-full check: thin wrapper around check_disk_space using MIN_DISK_SPACE_GB (D-07/D-08).
+function _check_disk_mid_run() {
+    check_disk_space "${MIN_DISK_SPACE_GB:-5}" "${dir:-.}"
+    return $?
+}
+
+# Hard-abort the run on disk-full mid-run detection (D-09). EXIT trap (Plan 01-01) clears .inprogress_* on the way out.
+function _abort_disk_full() {
+    _print_error "disk_full: aborting (${DISK_SPACE_INFO:-disk space exhausted})"
+    log_json "ERROR" "${FUNCNAME[1]:-main}" "Disk space exhausted" "reason=disk_full" "info=${DISK_SPACE_INFO:-unknown}"
+    exit 1
+}
+
 # Show progress bar for operations
 # Usage: progress_bar <current> <total> <message>
 function progress_bar() {
@@ -638,21 +745,53 @@ function run_with_adaptive_rate() {
 ####################################### SECURITY ################################################
 ###############################################################################################################
 
-# Sanitize domain input to prevent command injection
-# Usage: sanitize_domain <domain>
-# Returns: sanitized domain string (lowercase)
+# Sanitize domain input to prevent command injection.
+# Accepts bare domains, URLs (strips scheme/userinfo/path/query/fragment/port),
+# and IPv4 addresses (validated inline — octets > 255 rejected).
+# Usage: sanitize_domain <domain_or_url>
+# Returns: sanitized domain (lowercase) or IPv4
 function sanitize_domain() {
     local input_domain="$1"
+    local working="$input_domain"
 
-    # Remove any characters that are not alphanumeric, dots, or hyphens
-    # This prevents command injection via malicious domain names
+    # 1) Strip scheme (scheme://) — RFC 3986 scheme charset
+    if [[ "$working" =~ ^[a-zA-Z][a-zA-Z0-9+.-]*:// ]]; then
+        working="${working#*://}"
+    fi
+
+    # 2) Cut at first / ? # (path / query / fragment).
+    #    Must happen BEFORE userinfo strip: an @ inside a path is not userinfo.
+    working="${working%%[/?#]*}"
+
+    # 3) Strip userinfo (user:pass@host)
+    if [[ "$working" == *@* ]]; then
+        working="${working##*@}"
+    fi
+
+    # 4) Strip :port (bare IPv6 literals are not supported elsewhere in reconFTW)
+    working="${working%%:*}"
+
+    # 5) IPv4 post-normalization: redirect to inline octet validation.
+    if [[ "$working" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        local IFS_bak="$IFS"
+        IFS='.'
+        local -a _octs=($working)
+        IFS="$IFS_bak"
+        local _o
+        for _o in "${_octs[@]}"; do
+            if (( _o > 255 )); then
+                print_errorf "Invalid IP octet in '%s'" "$input_domain"
+                return 1
+            fi
+        done
+        echo "$working"
+        return 0
+    fi
+
+    # 6) Hardening: char whitelist + lowercase + trim leading/trailing dots/hyphens
     local sanitized
-    sanitized=$(echo "$input_domain" | tr -cd 'a-zA-Z0-9.-')
-
-    # Convert to lowercase for consistency
+    sanitized=$(echo "$working" | tr -cd 'a-zA-Z0-9.-')
     sanitized=$(echo "$sanitized" | tr '[:upper:]' '[:lower:]')
-
-    # Remove leading/trailing dots and hyphens
     sanitized=$(echo "$sanitized" | sed 's/^[.-]*//; s/[.-]*$//')
 
     # Check if domain is empty after sanitization
@@ -668,8 +807,11 @@ function sanitize_domain() {
         print_warnf "Domain '%s' has no TLD, may be invalid" "$sanitized" >&2
     fi
 
-    # If sanitization removed characters, warn user
-    if [[ "$input_domain" != "$sanitized" ]]; then
+    # Log only when the tr whitelist actually removed characters beyond case/trim.
+    # URL normalization (scheme/userinfo/path/port strip) is silent — that's the expected path.
+    local working_trivial
+    working_trivial=$(echo "$working" | tr '[:upper:]' '[:lower:]' | sed 's/^[.-]*//; s/[.-]*$//')
+    if [[ "$working_trivial" != "$sanitized" ]]; then
         print_notice INFO "sanitize_domain" "Domain sanitized from '${input_domain}' to '${sanitized}'" >&2
     fi
 
@@ -861,8 +1003,13 @@ function cached_download_typed() {
 
     mkdir -p "$(dirname "$cache_file")"
     # Download fresh copy
-    printf "%b[%s] Downloading: %s%b\n" \
-        "$bblue" "$(date +'%Y-%m-%d %H:%M:%S')" "$(basename "$url")" "$reset"
+    if _ui_human_output_enabled; then
+        printf "%b[%s] Downloading: %s%b\n" \
+            "$bblue" "$(date +'%Y-%m-%d %H:%M:%S')" "$(basename "$url")" "$reset"
+    elif [[ -n "${LOGFILE:-}" ]]; then
+        printf "[%s] Downloading: %s\n" \
+            "$(date +'%Y-%m-%d %H:%M:%S')" "$(basename "$url")" >>"$LOGFILE" 2>/dev/null || true
+    fi
 
     curl_cmd=(curl -sL "$url" -o "$destination")
     if [[ "$cache_type" == "resolvers" ]]; then
@@ -1174,6 +1321,7 @@ _ip_is_public_ipv4() {
 # Check if a cloud metadata endpoint is reachable (AWS, GCP, Azure, DO, Hetzner, Oracle).
 # Returns 0 if running on a cloud VPS, 1 otherwise.
 _is_cloud_vps() {
+    [[ "${DRY_RUN:-false}" == "true" ]] && return 1
     curl -sf --max-time 2 -o /dev/null http://169.254.169.254/ 2>/dev/null && return 0
     return 1
 }

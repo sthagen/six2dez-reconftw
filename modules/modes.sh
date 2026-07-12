@@ -13,6 +13,7 @@
 function start() {
 
     global_start=$(date +%s)
+    _RECON_CLEAN_EXIT=false  # CR-01 fix: gate _cleanup_inprogress so SIGINT/SIGTERM preserve .inprogress_* sentinels (D-02 clean-exit semantics)
     set +m 2>/dev/null || true
 
     # Validate configuration before starting
@@ -77,6 +78,9 @@ function start() {
     fi
     if [[ "${FORCE_RESCAN:-false}" == "true" ]]; then
         rm -f "$called_fn_dir"/.* 2>>"${LOGFILE:-/dev/null}" || true
+        # Explicitly clear .inprogress_* orphans so a --force run never inherits
+        # a fake resume condition regardless of shell dotglob settings (D-05).
+        rm -f "$called_fn_dir"/.inprogress_* 2>>"${LOGFILE:-/dev/null}" || true
     fi
     mkdir -p "$dir"
     cd "$dir" || {
@@ -116,6 +120,7 @@ function start() {
 
     # Trap for cleanup on unexpected exit
     trap 'cleanup_on_exit' INT TERM
+    trap '_cleanup_inprogress' EXIT  # silent EXIT-only sentinel sweep (D-02)
 
     # Initialize structured logging if enabled
     log_init
@@ -154,12 +159,155 @@ function start() {
     if [[ "${FORCE_RESCAN:-false}" == "true" ]]; then
         _print_msg WARN "Force rescan enabled: ignoring cached module markers"
     fi
+
+    # Resume banner (D-04): detect .inprogress_<fn> sentinels left behind by a
+    # prior crashed run and emit exactly ONE WARN line naming the affected
+    # functions. Guarded against unset called_fn_dir and skipped under
+    # FORCE_RESCAN (Step C already wiped any orphans there).
+    if [[ -n "${called_fn_dir:-}" ]] && [[ "${FORCE_RESCAN:-false}" != "true" ]]; then
+        local -a _leftover
+        mapfile -t _leftover < <(ls -1 "${called_fn_dir}"/.inprogress_* 2>/dev/null)
+        if ((${#_leftover[@]} > 0)); then
+            local _prefix="${called_fn_dir}/.inprogress_"
+            local -a _names=()
+            local _f
+            for _f in "${_leftover[@]}"; do
+                _names+=("${_f#"$_prefix"}")
+            done
+            local _joined
+            _joined=$(IFS=,; printf "%s" "${_names[*]}")
+            _print_msg WARN "resume: ${#_leftover[@]} functions re-running after interruption (${_joined})"
+            log_json "WARN" "resume" "Inprogress sentinels found" "reason=inprogress_leftover" "funcs=${_joined}"
+        fi
+    fi
+
     if [[ "${MONITOR_MODE:-false}" == "true" ]] && [[ "${MONITOR_CYCLE:-1}" -gt 1 ]]; then
         notification "Monitor cycle ${MONITOR_CYCLE}: skipping repeated tools check" info
     else
         tools_installed
     fi
 
+}
+
+# Prepare the web-mode output dir for a clean run. Behavior differs between
+# `-l` (shared "Multi" dir, scope redefined per invocation) and `-d`
+# (per-domain dir, scope stable across invocations):
+#
+# The Multi dir is created only by the `-l -w` flow, so nothing in it predates
+# a `-w` invocation — the entire contents (other than cross-run tracking) can
+# be wiped to guarantee scope isolation between distinct lists.
+#
+# Per-domain dirs may have been populated by prior `-a`/`-s`/`-p` runs, so
+# non-web state must survive.
+#
+# Always wiped (pure web-pipeline artifacts that anew-accumulate):
+#   webs/*, .tmp/*, js/*, fuzzing/*, gf/*, screenshots/*, assets.jsonl
+#
+# Additionally wiped in `-l` Multi mode (no prior non-web state to protect):
+#   vulns/*      — nuclei/cms/swagger/graphql findings
+#   subdomains/* — subtakeover, sub_js_extract, tls_ip_pivots artifacts
+#   hosts/*      — grpc_reflection.txt and any hosts/ writer in webs_menu
+#   osint/*      — defensive wipe (no webs_menu writers today, but prevents
+#                   accidental leakage if a module grows an osint/ output path)
+#
+# Always preserved (cross-run tracking):
+#   .log/*, .incremental/*, .called_fn/*, debug.log
+#
+# For `-d`: vulns/, subdomains/ (except subdomains.txt append), hosts/, osint/
+# are preserved so prior recon state survives. webs_menu modules using anew
+# will add new findings atop old ones (default incremental-but-untracked
+# behavior).
+#
+# subdomains/subdomains.txt handling:
+#   -l Multi:   OVERWRITE with sanitized hostnames from the list (scope reset)
+#   -d <dom>:   APPEND the target via anew so enumerated subs from prior
+#               `-a`/`-s` remain as probe input
+#
+# Used by: reconftw.sh -w dispatch, monitor_mode 'w' case (every cycle).
+function prepare_web_mode_scope() {
+    if [[ -n $list ]]; then
+        # Defense-in-depth for the user's input file: treat $flist as strictly
+        # read-only. One initial `cp` to a tmp snapshot outside $dir; every
+        # subsequent operation uses the snapshot. The original is never written,
+        # deleted, or re-referenced — so even if -path matching has edge cases
+        # (trailing slash, symlinks, case folding) the original is untouched.
+        local _list_snapshot
+        if ! _list_snapshot=$(mktemp -t reconftw_web_list.XXXXXX); then
+            return 1
+        fi
+        if ! cp "$flist" "$_list_snapshot" 2>/dev/null; then
+            rm -f "$_list_snapshot" 2>/dev/null
+            return 1
+        fi
+
+        # Sanitize + stage OUTSIDE $dir first. Only wipe $dir after we know we
+        # have a non-empty, validated new scope — otherwise a fail-close path
+        # would destroy prior output dirs and leave the caller with no scope
+        # AND no prior state. `| sort -u > file` hides the while-loop rc, so
+        # we capture `$?` of the whole pipeline (which is `sort`'s + the
+        # redirection) and also check the staged file is non-empty.
+        local _subs_stage
+        if ! _subs_stage=$(mktemp -t reconftw_web_subs.XXXXXX); then
+            rm -f "$_list_snapshot" 2>/dev/null
+            return 1
+        fi
+        local _t _write_rc
+        while IFS= read -r _t <&3 || [[ -n "$_t" ]]; do
+            _t=${_t%$'\r'}
+            [[ -z "$_t" ]] && continue
+            _t=$(_sanitize_list_entry "$_t") || continue
+            printf '%s\n' "$_t"
+        done 3<"$_list_snapshot" | sort -u >"$_subs_stage"
+        _write_rc=$?
+
+        rm -f "$_list_snapshot" 2>/dev/null
+
+        if (( _write_rc != 0 )) || [[ ! -s "$_subs_stage" ]]; then
+            # Empty/failed staging → every entry rejected by sanitization, or
+            # the write failed. Abort WITHOUT wiping $dir so prior state
+            # survives the failed prep.
+            rm -f "$_subs_stage" 2>/dev/null
+            return 1
+        fi
+
+        # Validation passed → safe to wipe and install the new scope atomically.
+        # -l Multi: the dir is only ever created/populated by -l -w flow, so no
+        # non-web state needs protecting. Wipe every file under $dir except
+        # cross-run tracking and $flist (belt-and-suspenders in case the user's
+        # list path lives inside $dir).
+        find "$dir" -mindepth 1 -type f \
+            -not -path "$dir/.log/*" \
+            -not -path "$dir/.incremental/*" \
+            -not -path "$dir/.called_fn/*" \
+            -not -path "$dir/debug.log" \
+            -not -path "$flist" \
+            -delete 2>/dev/null || true
+
+        mkdir -p "$dir/subdomains" 2>/dev/null
+        if ! mv "$_subs_stage" "$dir/subdomains/subdomains.txt"; then
+            rm -f "$_subs_stage" 2>/dev/null
+            return 1
+        fi
+        return 0
+    else
+        # -d <domain>: the per-domain dir may hold prior -a/-s/-p recon state
+        # that must survive (hosts/ips.txt for virtualhosts, subdomains enum,
+        # vulns/ findings history, osint/, etc.). Wipe only pure web-pipeline
+        # artifacts that modules append via anew/>> and would otherwise mix
+        # prior-run data with this run's probe output.
+        local _p
+        for _p in webs .tmp js fuzzing gf screenshots; do
+            [[ -d "$dir/$_p" ]] && find "$dir/$_p" -mindepth 1 -type f -delete 2>/dev/null || true
+        done
+        : >"$dir/assets.jsonl" 2>/dev/null || true
+
+        mkdir -p "$dir/subdomains" 2>/dev/null
+        if ! printf '%s\n' "$domain" | anew -q "$dir/subdomains/subdomains.txt"; then
+            return 1
+        fi
+        [[ -s "$dir/subdomains/subdomains.txt" ]] || return 1
+        return 0
+    fi
 }
 
 function end() {
@@ -360,6 +508,13 @@ function end() {
         export_reports || true
     fi
 
+    # Mark clean traversal so the EXIT trap's _cleanup_inprogress sweeps
+    # .inprogress_* sentinels (D-02 clean-exit semantics; CR-01 fix). Any
+    # path that bypasses end() — SIGINT/SIGTERM via cleanup_on_exit, an
+    # internal abort like _abort_disk_full's exit 1, or an unhandled error
+    # — leaves the flag at false and the sentinels survive to drive the
+    # next run's resume banner.
+    _RECON_CLEAN_EXIT=true
 }
 
 function build_hotlist() {
@@ -606,7 +761,7 @@ function vulns() {
                     return 1
                 fi
             fi
-            parallel_funcs "${PAR_VULNS_GROUP4_SIZE:-3}" webcache spraying brokenLinks
+            parallel_funcs "${PAR_VULNS_GROUP4_SIZE:-3}" webcache spraying brokenLinks fray_checks
             local vulns_g4_rc=$?
             if ((vulns_g4_rc > 0)); then
                 if [[ "${CONTINUE_ON_TOOL_ERROR:-true}" == "true" ]]; then
@@ -633,6 +788,7 @@ function vulns() {
             webcache
             spraying
             run_module_with_axiom_failover brokenLinks
+            fray_checks
             run_module_with_axiom_failover fuzzparams
             run_module_with_axiom_failover nuclei_dast
             4xxbypass
@@ -824,24 +980,34 @@ function recon() {
         _print_status SKIP "Web Analysis" "(no new subs/webs)"
         TIME_SAVED_EST=$((${TIME_SAVED_EST:-0} + \
             ${TIME_EST_WAF:-0} + ${TIME_EST_NUCLEI:-600} + ${TIME_EST_API:-300} + ${TIME_EST_GQL:-180} + \
-            ${TIME_EST_FUZZ:-900} + ${TIME_EST_IIS:-60} + ${TIME_EST_URLCHECKS:-300} + ${TIME_EST_JSCHECKS:-300} + \
+            ${TIME_EST_FUZZ:-900} + ${TIME_EST_IIS:-60} + ${TIME_EST_SJ:-120} + ${TIME_EST_URLCHECKS:-300} + ${TIME_EST_JSCHECKS:-300} + \
             ${TIME_EST_PARAM:-240} + ${TIME_EST_GRPC:-120}))
     else
         _print_section "Web Analysis"
 
+        # Heavy scanning functions run sequentially to avoid overwhelming targets
         run_module_with_axiom_failover waf_checks
         run_module_with_axiom_failover nuclei_check
         run_module_with_axiom_failover graphql_scan
         run_module_with_axiom_failover fuzz
         run_module_with_axiom_failover iishortname
+        swagger_check
         run_module_with_axiom_failover urlchecks
         run_module_with_axiom_failover jschecks
         sub_js_extract
         well_known_pivots
-        websocket_checks
-        run_module_with_axiom_failover param_discovery
-        grpc_reflection
-        llm_probe
+
+        # Lightweight functions can run in parallel (minimal target load)
+        if [[ "${PARALLEL_MODE:-true}" == "true" ]] && declare -f parallel_funcs &>/dev/null; then
+            parallel_funcs "${PAR_WEB_ANALYSIS_LIGHT_SIZE:-3}" websocket_checks grpc_reflection llm_probe
+        else
+            websocket_checks
+            grpc_reflection
+            llm_probe
+        fi
+
+        # param_discovery runs locally only (arjun not available in axiom images)
+        param_discovery
 
         ui_module_end "Web Analysis" "webs/" "hosts/" "vulns/" "nuclei_output/" "js/" "fuzzing/"
         progress_module "Web Analysis"
@@ -1043,6 +1209,7 @@ function multi_recon() {
         loopstart=$(date +%s)
         run_module_with_axiom_failover fuzz
         run_module_with_axiom_failover iishortname
+        swagger_check
         run_module_with_axiom_failover urlchecks
         run_module_with_axiom_failover jschecks
         currently=$(date +"%H:%M:%S")
@@ -1150,22 +1317,30 @@ function multi_custom() {
     custom_function_list=$(echo "$custom_function" | tr ',' '\n')
     func_total=$(echo "$custom_function_list" | wc -l)
 
+    # Iterate each target line through _sanitize_list_entry instead of loading
+    # the whole file into $domain. Loading the whole file exposed every sink
+    # that expands $domain unquoted (urlfinder, EmailHarvester) to CLI option
+    # injection and accidental word-splitting across multiple targets.
     func_count=0
-    domain=$(cat "$flist")
-    for custom_f in $custom_function_list; do
-        ((func_count = func_count + 1))
+    while IFS= read -r raw_domain || [[ -n "$raw_domain" ]]; do
+        [[ -z "$raw_domain" ]] && continue
+        domain=$(_sanitize_list_entry "$raw_domain") || continue
 
-        loopstart=$(date +%s)
+        for custom_f in $custom_function_list; do
+            ((func_count = func_count + 1))
 
-        run_module_with_axiom_failover "$custom_f"
+            loopstart=$(date +%s)
 
-        currently=$(date +"%H:%M:%S")
-        loopend=$(date +%s)
-        local duration=$((loopend - loopstart))
-        _print_status OK "$custom_f" "${duration}s"
-        [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]] && \
-            print_notice INFO "$custom_f" "entries ${entries} (${func_count}/${func_total}) at ${currently}"
-    done
+            run_module_with_axiom_failover "$custom_f"
+
+            currently=$(date +"%H:%M:%S")
+            loopend=$(date +%s)
+            local duration=$((loopend - loopstart))
+            _print_status OK "$custom_f" "${duration}s (${domain})"
+            [[ "${OUTPUT_VERBOSITY:-1}" -ge 2 ]] && \
+                print_notice INFO "$custom_f" "entries ${entries} (${func_count}/${func_total}) at ${currently}"
+        done
+    done <"$flist"
 
     if [[ $AXIOM == true ]]; then
         axiom_shutdown
@@ -1222,8 +1397,9 @@ function webs_menu() {
     run_module_with_axiom_failover fuzz
     cms_scanner
     run_module_with_axiom_failover iishortname
+    swagger_check
     run_module_with_axiom_failover urlchecks
-    run_module_with_axiom_failover param_discovery
+    param_discovery
     run_module_with_axiom_failover jschecks
     sub_js_extract
     well_known_pivots
@@ -1268,6 +1444,7 @@ function zen_menu() {
     run_module_with_axiom_failover graphql_scan
     run_module_with_axiom_failover fuzz
     run_module_with_axiom_failover iishortname
+    swagger_check
     if [[ $AXIOM == true ]]; then
         axiom_shutdown
     fi
@@ -1336,17 +1513,24 @@ function monitor_mode() {
                 all
                 ;;
             'w')
-                if [[ -n $list ]]; then
-                    start
-                    if [[ $list == /* ]]; then
-                        cp "$list" "$dir/webs/webs.txt"
-                    else
-                        cp "${SCRIPTPATH}/$list" "$dir/webs/webs.txt"
-                    fi
-                    webs_menu
-                else
+                if [[ -z $list ]]; then
                     notification "Web mode in monitor requires -l list file" error
                     return 1
+                fi
+                # Same scope-prep as the one-shot -w dispatch: wipe stale module
+                # output, preserve cross-run state (.log/.incremental/.called_fn/
+                # debug.log), and populate subdomains/subdomains.txt with sanitized
+                # hostnames so webprobe_full picks them up. DIFF=true is already
+                # set by monitor_mode above. If scope prep fails (mktemp / cp
+                # error) skip webs_menu so we don't probe a stale scope, but
+                # fall through to the normal post-case (monitor_snapshot,
+                # max-cycles check, sleep) — `continue` here would busy-loop and
+                # bypass MONITOR_MAX_CYCLES.
+                start
+                if prepare_web_mode_scope; then
+                    webs_menu
+                else
+                    notification "Web-scope preparation failed this cycle; skipping webs_menu until next interval" warn
                 fi
                 ;;
             'n')

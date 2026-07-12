@@ -242,18 +242,6 @@ source_reconftw() {
     [ "$status" -eq 0 ]
 }
 
-@test "full flow: safe_count handles missing files" {
-    source_reconftw
-    
-    # shellcheck source=/dev/null
-    source "$SCRIPTPATH/lib/common.sh"
-    
-    # Test with non-existent file
-    local count
-    count=$(safe_count "/nonexistent/file.txt")
-    [ "$count" -eq 0 ]
-}
-
 @test "full flow: parallel_funcs handles empty list" {
     source_reconftw
     

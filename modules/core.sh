@@ -18,56 +18,110 @@ pt_header() { :; }
 # If LOGFILE is unset or empty, send logs to /dev/null until later initialization
 : "${LOGFILE:=/dev/null}"
 
-# List of environment variables containing secrets that should be redacted in logs
+# List of environment-variable names whose VALUES should be redacted from logs
+# and dry-run previews. Values resolved via ${!var} indirection from the
+# current shell scope.
 REDACT_VARS=(
     "SHODAN_API_KEY"
     "WHOISXML_API"
     "PDCP_API_KEY"
     "GITHUB_TOKEN"
+    "GH_TOKEN"
     "GITLAB_TOKEN"
     "DISCORD_WEBHOOK_URL"
     "SLACK_WEBHOOK_URL"
+    "SLACK_BOT_TOKEN"
+    "TELEGRAM_BOT_TOKEN"
     "slack_auth"
+    "telegram_key"
+    "telegram_api_key"
+    "discord_url"
+    "discord_webhook_url"
     "XSS_SERVER"
     "COLLAB_SERVER"
 )
 
+# Values (not names) registered at runtime from config files or CLI parsing.
+# Used when a secret lives in a local var that `${!var}` can't reach from
+# inside redact_secrets, e.g. telegram_key parsed inside sendToNotify().
+REGISTERED_SECRETS=()
+
+# register_secret()
+# Description: Adds a raw secret VALUE to REGISTERED_SECRETS so later redaction
+# passes will replace it with [REDACTED]. Safe to call repeatedly (deduped).
+# Arguments: $1 - secret value
+function register_secret() {
+    local value="$1"
+    [[ -z "$value" || ${#value} -le 4 ]] && return 0
+
+    local existing
+    for existing in "${REGISTERED_SECRETS[@]}"; do
+        [[ "$existing" == "$value" ]] && return 0
+    done
+    REGISTERED_SECRETS+=("$value")
+}
+
 # redact_secrets()
-# Description: Redacts sensitive values from a string
+# Description: Redacts sensitive values from a string. Consults both the
+# REDACT_VARS list (env-var-name lookups) and REGISTERED_SECRETS (raw values
+# from config files).
 # Arguments: $1 - String to redact
 # Returns: Redacted string via stdout
 function redact_secrets() {
     local text="$1"
     local redacted="$text"
-    
+    local var value secret
+
     for var in "${REDACT_VARS[@]}"; do
-        local value="${!var:-}"
+        value="${!var:-}"
         if [[ -n "$value" && ${#value} -gt 4 ]]; then
-            # Replace the secret with [REDACTED]
             redacted="${redacted//$value/[REDACTED]}"
         fi
     done
-    
+
+    for secret in "${REGISTERED_SECRETS[@]}"; do
+        if [[ -n "$secret" && ${#secret} -gt 4 ]]; then
+            redacted="${redacted//$secret/[REDACTED]}"
+        fi
+    done
+
     echo "$redacted"
 }
 
+# _trace_redact_stream()
+# Description: Reads xtrace lines from stdin, runs each through redact_secrets()
+# and appends the scrubbed line to $LOGFILE. Used as the sink for
+# BASH_XTRACEFD so SHOW_COMMANDS=true never writes raw secrets to disk.
+_trace_redact_stream() {
+    local line
+    while IFS= read -r line; do
+        if declare -F redact_secrets >/dev/null 2>&1; then
+            line=$(redact_secrets "$line")
+        fi
+        printf '%s\n' "$line"
+    done >>"$LOGFILE"
+}
+
 enable_command_trace() {
-    # Enable bash xtrace to the current LOGFILE when SHOW_COMMANDS=true
-    # WARNING: This may log sensitive data. Use redact_secrets() when reviewing logs.
+    # Enable bash xtrace to the current LOGFILE when SHOW_COMMANDS=true.
+    # xtrace output is routed through _trace_redact_stream so registered
+    # secrets (REDACT_VARS + REGISTERED_SECRETS) are replaced with [REDACTED]
+    # before the line reaches disk.
     if [[ ${SHOW_COMMANDS:-false} != true ]]; then
         return
     fi
     [[ -z ${LOGFILE:-} ]] && return
 
-    _print_status WARN "Command tracing enabled" "Logs may contain sensitive data"
+    _print_status WARN "Command tracing enabled" "Logs routed through redact_secrets"
 
     # Close any previous trace descriptor (native bash {varname} redirect syntax)
     if [[ -n ${TRACE_FD:-} ]]; then
         exec {TRACE_FD}>&- 2>/dev/null || true
     fi
 
-    # Open a new descriptor against the active log
-    if ! exec {TRACE_FD}>>"$LOGFILE"; then
+    # Open a new descriptor against a redaction filter (process substitution).
+    # Each xtrace line passes through _trace_redact_stream before hitting LOGFILE.
+    if ! exec {TRACE_FD}> >(_trace_redact_stream); then
         return
     fi
     export BASH_XTRACEFD=$TRACE_FD
@@ -413,8 +467,6 @@ function tools_installed() {
         ["Scopify_python"]="${tools}/Scopify/venv/bin/python3"
         ["EmailHarvester"]="${tools}/EmailHarvester/EmailHarvester.py"
         ["EmailHarvester_python"]="${tools}/EmailHarvester/venv/bin/python3"
-        ["metagoofil"]="${tools}/metagoofil/metagoofil.py"
-        ["metagoofil_python"]="${tools}/metagoofil/venv/bin/python3"
         ["reconftw_ai"]="${tools}/reconftw_ai/reconftw_ai.py"
         ["reconftw_ai_python"]="${tools}/reconftw_ai/venv/bin/python3"
         ["ghleaks"]="${tools}/ghleaks/ghleaks"
@@ -481,7 +533,7 @@ function tools_installed() {
         ["ghauri"]="ghauri"
         ["hakip2host"]="hakip2host"
         ["crt"]="crt"
-        ["gitleaks"]="gitleaks"
+        ["titus"]="titus"
         ["trufflehog"]="trufflehog"
         ["s3scanner"]="s3scanner"
         ["mantra"]="mantra"
@@ -507,6 +559,9 @@ function tools_installed() {
         ["favirecon"]="favirecon"
         ["TInjA"]="TInjA"
         ["second-order"]="second-order"
+        ["exifray"]="exifray"
+        ["fray"]="fray"
+        ["sj"]="sj"
     )
 
     # Check for tool files
@@ -1246,10 +1301,9 @@ function remove_big_files() {
 
 function notification() {
     if [[ -n $1 ]] && [[ -n $2 ]]; then
+        local -a notify_cmd=()
         if [[ $NOTIFICATION == true ]]; then
-            NOTIFY="notify -silent"
-        else
-            NOTIFY=""
+            notify_cmd=(notify -silent)
         fi
         local level="INFO"
         case $2 in
@@ -1282,8 +1336,8 @@ function notification() {
 
         if [[ "$should_print" != true ]]; then
             # Still send to notify if enabled, just skip terminal print
-            if [[ -n $NOTIFY ]]; then
-                printf "%s" "[${level}] ${1} - ${domain}" | $NOTIFY >/dev/null 2>&1
+            if [[ ${#notify_cmd[@]} -gt 0 ]]; then
+                printf "%s" "[${level}] ${1} - ${domain}" | "${notify_cmd[@]}" >/dev/null 2>&1
             fi
             return 0
         fi
@@ -1293,11 +1347,11 @@ function notification() {
         if [[ "$level" == "WARN" || "$level" == "FAIL" ]]; then
             record_incident "$level" "${FUNCNAME[1]:-notice}" "$1"
         fi
- 
+
         # Send to notify if notifications are enabled
-        if [[ -n $NOTIFY ]]; then
+        if [[ ${#notify_cmd[@]} -gt 0 ]]; then
             # Remove color codes for the notification
-            printf "%s" "[${level}] ${1} - ${domain}" | $NOTIFY >/dev/null 2>&1
+            printf "%s" "[${level}] ${1} - ${domain}" | "${notify_cmd[@]}" >/dev/null 2>&1
         fi
     fi
 }
@@ -1331,10 +1385,10 @@ function transfer {
 }
 
 function sendToNotify {
-    if [[ -z $1 ]]; then
+    if [[ -z "${1}" ]]; then
         _print_status WARN "No file provided to send"
     else
-        if [[ -z $NOTIFY_CONFIG ]]; then
+        if [[ -z "${NOTIFY_CONFIG}" ]]; then
             NOTIFY_CONFIG=~/.config/notify/provider-config.yaml
         fi
         if [[ -n "$(find "${1}" -prune -size +8000000c)" ]]; then
@@ -1342,25 +1396,31 @@ function sendToNotify {
             transfer "${1}" | notify -silent
             return 0
         fi
-        if grep -q '^ telegram\|^telegram\|^    telegram' $NOTIFY_CONFIG; then
+        if grep -q '^ telegram\|^telegram\|^    telegram' "${NOTIFY_CONFIG}"; then
             notification "Sending ${domain} data over Telegram" info
-            telegram_chat_id=$(sed -n '/^telegram:/,/^[^ ]/p' ${NOTIFY_CONFIG} | sed -n 's/^[ ]*telegram_chat_id:[ ]*"\([^"]*\)".*/\1/p')
-            telegram_key=$(sed -n '/^telegram:/,/^[^ ]/p' ${NOTIFY_CONFIG} | sed -n 's/^[ ]*telegram_api_key:[ ]*"\([^"]*\)".*/\1/p')
-            run_command curl -F "chat_id=${telegram_chat_id}" -F "document=@${1}" https://api.telegram.org/bot${telegram_key}/sendDocument 2>>"$LOGFILE" >/dev/null
+            telegram_chat_id=$(sed -n '/^telegram:/,/^[^ ]/p' "${NOTIFY_CONFIG}" | sed -n 's/^[ ]*telegram_chat_id:[ ]*"\([^"]*\)".*/\1/p')
+            telegram_key=$(sed -n '/^telegram:/,/^[^ ]/p' "${NOTIFY_CONFIG}" | sed -n 's/^[ ]*telegram_api_key:[ ]*"\([^"]*\)".*/\1/p')
+            register_secret "${telegram_key}"
+            run_command curl -F "chat_id=${telegram_chat_id}" -F "document=@${1}" "https://api.telegram.org/bot${telegram_key}/sendDocument" 2>>"$LOGFILE" >/dev/null
         fi
-        if grep -q '^ discord\|^discord\|^    discord' $NOTIFY_CONFIG; then
+        if grep -q '^ discord\|^discord\|^    discord' "${NOTIFY_CONFIG}"; then
             notification "Sending ${domain} data over Discord" info
-            discord_url=$(sed -n '/^discord:/,/^[^ ]/p' ${NOTIFY_CONFIG} | sed -n 's/^[ ]*discord_webhook_url:[ ]*"\([^"]*\)".*/\1/p')
-            run_command curl -v -i -H "Accept: application/json" -H "Content-Type: multipart/form-data" -X POST -F 'payload_json={"username": "test", "content": "hello"}' -F file1=@${1} $discord_url 2>>"$LOGFILE" >/dev/null
+            discord_url=$(sed -n '/^discord:/,/^[^ ]/p' "${NOTIFY_CONFIG}" | sed -n 's/^[ ]*discord_webhook_url:[ ]*"\([^"]*\)".*/\1/p')
+            register_secret "${discord_url}"
+            run_command curl -v -i -H "Accept: application/json" -H "Content-Type: multipart/form-data" -X POST -F 'payload_json={"username": "test", "content": "hello"}' -F "file1=@${1}" "${discord_url}" 2>>"$LOGFILE" >/dev/null
         fi
-        if [[ -n $slack_channel ]] && [[ -n $slack_auth ]]; then
+        if [[ -n "${slack_channel}" ]] && [[ -n "${slack_auth}" ]]; then
+            register_secret "${slack_auth}"
             notification "Sending ${domain} data over Slack" info
-            run_command curl -F file=@${1} -F "initial_comment=reconftw zip file" -F channels=${slack_channel} -H "Authorization: Bearer ${slack_auth}" https://slack.com/api/files.upload 2>>"$LOGFILE" >/dev/null
+            run_command curl -F "file=@${1}" -F "initial_comment=reconftw zip file" -F "channels=${slack_channel}" -H "Authorization: Bearer ${slack_auth}" https://slack.com/api/files.upload 2>>"$LOGFILE" >/dev/null
         fi
     fi
 }
 
 function start_func() {
+    # Mid-run disk-full guard (D-07/D-09): abort BEFORE any state write so the
+    # Plan 01-01 EXIT trap clears .inprogress_* with no orphan for this function.
+    _check_disk_mid_run || _abort_disk_full
     local current_date
     current_date=$(date +'%Y-%m-%d %H:%M:%S')
     echo "[$current_date] Start function: ${1} " >>"${LOGFILE}"
@@ -1369,6 +1429,15 @@ function start_func() {
     printf -v "_start_time_${_fn_name//[^a-zA-Z0-9_]/_}" '%s' "$(date +%s)"
     # Keep global $start for backward compat (serial mode)
     start=$(date +%s)
+    # Resume sentinel (RESIL-01 / D-01): touch .inprogress_<fn> as a crash-leftover
+    # marker. end_func removes it before touching .<fn>. The EXIT trap clears it
+    # ONLY when end() sets _RECON_CLEAN_EXIT=true (clean traversal). SIGINT/SIGTERM
+    # via cleanup_on_exit does NOT set the flag, so the sentinel survives and the
+    # next run's resume banner fires (CR-01 / SC1 fix; see modules/modes.sh start()
+    # and end() for the flag set/init points).
+    if [[ -n "${called_fn_dir:-}" ]]; then
+        touch "$called_fn_dir/.inprogress_${1}" 2>/dev/null || true
+    fi
     log_json "INFO" "${1}" "Function started" "description=${2}"
     if declare -F ui_log_jsonl >/dev/null 2>&1; then
         ui_log_jsonl "INFO" "${1}" "Function started" "description=${2}"
@@ -1406,7 +1475,15 @@ function end_func() {
         esac
     fi
 
-    touch "$called_fn_dir/.${fn}"
+    # Resume sentinel (RESIL-01 / D-01): remove .inprogress_<fn> BEFORE touching
+    # the .<fn> success checkpoint. A crash between the rm and the touch leaves
+    # .<fn> absent — the existing checkpoint guard re-enters the function on the
+    # next run. .<fn> is the source of truth; .inprogress_<fn> is a surface
+    # indicator only.
+    if [[ -n "${called_fn_dir:-}" ]]; then
+        rm -f "$called_fn_dir/.inprogress_${fn}" 2>/dev/null || true
+        touch "$called_fn_dir/.${fn}" 2>/dev/null || true
+    fi
     local end
     end=$(date +%s)
     # Try per-function start time first (parallel-safe), fall back to global $start
@@ -1471,6 +1548,11 @@ function end_func() {
         ui_log_jsonl "SUCCESS" "${fn}" "Function completed" "runtime=${runtime}" "duration_sec=${duration}"
     fi
 
+    # Post-checkpoint disk guard (D-07/D-09): runs AFTER .<fn> and .status_<fn>
+    # are durably written so the completed function leaves a full success record;
+    # abort here protects the NEXT function from running with no headroom.
+    _check_disk_mid_run || _abort_disk_full
+
     :
 }
 
@@ -1488,7 +1570,9 @@ function start_subfunc() {
 }
 
 function end_subfunc() {
-    touch "$called_fn_dir/.${2}"
+    if [[ -n "${called_fn_dir:-}" ]]; then
+        touch "$called_fn_dir/.${2}" 2>/dev/null || true
+    fi
     end_sub=$(date +%s)
     getElapsedTime "$start_sub" "$end_sub"
     local duration=$((end_sub - start_sub))

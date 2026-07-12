@@ -251,21 +251,6 @@ EOF
 }
 
 ###############################################################################
-# safe_count tests
-###############################################################################
-
-@test "safe_count returns valid number" {
-    printf "line1\nline2\n" > test.txt
-    result=$(safe_count "cat test.txt")
-    [ "$result" -eq 2 ]
-}
-
-@test "safe_count returns 0 on failure" {
-    result=$(safe_count "cat nonexistent_file_xyz.txt")
-    [ "$result" -eq 0 ]
-}
-
-###############################################################################
 # process_results tests
 ###############################################################################
 

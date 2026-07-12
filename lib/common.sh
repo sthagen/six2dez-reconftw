@@ -745,24 +745,6 @@ run_with_heartbeat_shell() {
     run_with_heartbeat "$label" /bin/bash -lc "$shell_cmd"
 }
 
-# Count non-empty lines in a file safely
-# Usage: NUMOFLINES=$(safe_count "file_path")
-#        NUMOFLINES=$(safe_count "command | pipeline")  # legacy: still supported via eval
-# Always returns a valid number (0 on failure)
-safe_count() {
-    local result
-    if [[ -f "$1" ]]; then
-        # Safe path: count lines in file directly, no eval
-        result=$(sed '/^$/d' "$1" 2>/dev/null | wc -l | tr -d ' ') || result=0
-    else
-        # Legacy fallback for callers passing pipeline strings
-        # TODO: migrate remaining callers to pass file paths
-        result=$(eval "$1" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ') || result=0
-    fi
-    [[ "$result" =~ ^[0-9]+$ ]] || result=0
-    echo "$result"
-}
-
 ###############################################################################
 # Pipeline Helpers
 ###############################################################################
@@ -778,7 +760,10 @@ process_results() {
         if command -v anew &>/dev/null; then
             count=$(anew "$output" < "$input" 2>/dev/null | sed '/^$/d' | wc -l | tr -d ' ')
         else
-            count=$(cat "$input" >> "$output" && wc -l < "$input" | tr -d ' ')
+            # Fallback: no dedup — append all and count non-empty input lines
+            # (may overcount duplicates already present in output)
+            cat "$input" >> "$output" 2>/dev/null
+            count=$(sed '/^$/d' "$input" | wc -l | tr -d ' ')
         fi
     fi
     

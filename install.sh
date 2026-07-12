@@ -62,12 +62,13 @@ fi
 # Globals for CLI overrides
 FORCE_UPDATE=${FORCE_UPDATE:-false}
 VERBOSE=${VERBOSE:-false}
-LOGFILE=${LOGFILE-}
+LOGFILE=${LOGFILE:-"./install.log"}
 DRY_RUN=${DRY_RUN:-false}
 TOOLS_ONLY=${TOOLS_ONLY:-false}
 
-# If LOGFILE provided via env/flag, tee all output
+# Log all output (default: install.log in repo root)
 if [[ -n ${LOGFILE} ]]; then
+    : > "${LOGFILE}"
     exec > >(tee -a "${LOGFILE}") 2>&1
 fi
 
@@ -76,6 +77,29 @@ run_to() {
     local secs=$1
     shift || true
     if [[ -n $TIMEOUT_CMD ]]; then "$TIMEOUT_CMD" "$secs" "$@"; else "$@"; fi
+}
+
+# verify_sha256 <file> <expected-hex>
+# Returns 0 if the file's SHA-256 matches expected, 1 otherwise. Works with
+# both GNU sha256sum (Linux) and shasum -a 256 (macOS).
+verify_sha256() {
+    local file="$1"
+    local expected="$2"
+    local actual=""
+
+    [[ -n "$expected" ]] || return 0   # nothing to verify
+    [[ -s "$file" ]] || return 1
+
+    if command -v sha256sum >/dev/null 2>&1; then
+        actual=$(sha256sum "$file" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        actual=$(shasum -a 256 "$file" | awk '{print $1}')
+    else
+        printf '[WARN] verify_sha256: no sha256sum or shasum found; skipping integrity check for %s\n' "$file" >&2
+        return 0  # preserve backward compat but warn loudly
+    fi
+
+    [[ -n "$actual" && "$actual" == "$expected" ]]
 }
 
 # Helper: optionally dry-run
@@ -135,10 +159,23 @@ ensure_git_dir() {
 # Called from install_apt/install_yum/install_pacman/install_brew to avoid duplication.
 install_rust_uv() {
     local _tmpfile
+    local _expected
     # Install rustup via downloaded script (verify before executing)
     _tmpfile=$(mktemp "${TMPDIR:-/tmp}/rustup_install.XXXXXX")
     if curl -sSf https://sh.rustup.rs -o "$_tmpfile" 2>/dev/null; then
-        sh "$_tmpfile" -y >/dev/null 2>&1
+        _expected="${RUSTUP_INSTALLER_SHA256:-}"
+        if [[ -n "$_expected" ]]; then
+            if verify_sha256 "$_tmpfile" "$_expected"; then
+                msg_ok "[!] rustup installer sha256 verified"
+                sh "$_tmpfile" -y >/dev/null 2>&1
+            else
+                msg_err "[!] rustup installer sha256 mismatch; refusing to execute"
+                rm -f "$_tmpfile"
+                return 1
+            fi
+        else
+            sh "$_tmpfile" -y >/dev/null 2>&1
+        fi
     else
         msg_warn "[!] Failed to download rustup installer"
     fi
@@ -151,7 +188,19 @@ install_rust_uv() {
     # Install uv via downloaded script (verify before executing)
     _tmpfile=$(mktemp "${TMPDIR:-/tmp}/uv_install.XXXXXX")
     if curl -LsSf https://astral.sh/uv/install.sh -o "$_tmpfile" 2>/dev/null; then
-        sh "$_tmpfile" &>/dev/null
+        _expected="${UV_INSTALLER_SHA256:-}"
+        if [[ -n "$_expected" ]]; then
+            if verify_sha256 "$_tmpfile" "$_expected"; then
+                msg_ok "[!] uv installer sha256 verified"
+                sh "$_tmpfile" &>/dev/null
+            else
+                msg_err "[!] uv installer sha256 mismatch; refusing to execute"
+                rm -f "$_tmpfile"
+                return 1
+            fi
+        else
+            sh "$_tmpfile" &>/dev/null
+        fi
     else
         msg_warn "[!] Failed to download uv installer"
     fi
@@ -238,6 +287,22 @@ check_network() {
     if [[ $_net_ok == true ]]; then
         printf "%bNetwork OK%b\n" "$bgreen" "$reset"
     fi
+
+    # Warn about low disk space (installer needs ~5GB free for Go cache, tools, repos)
+    local _avail_mb
+    _avail_mb=$(df -m "${HOME}" 2>/dev/null | awk 'NR==2{print $4}')
+    if [[ -n ${_avail_mb:-} ]] && (( _avail_mb < 5120 )); then
+        printf "%b[!] Low disk space: only %s MB free on %s. Installation needs ~5GB. Some tools may fail.%b\n" "$bred" "$_avail_mb" "$HOME" "$reset"
+    fi
+
+    # Warn about low memory (Go compilation needs at least 1GB)
+    if [[ -f /proc/meminfo ]]; then
+        local _mem_total_kb
+        _mem_total_kb=$(awk '/^MemTotal:/{print $2}' /proc/meminfo 2>/dev/null || true)
+        if [[ -n ${_mem_total_kb:-} ]] && (( _mem_total_kb < 1048576 )); then
+            printf "%b[!] Low memory: %s MB total. Go/Rust compilation may fail. Consider adding swap.%b\n" "$yellow" "$((_mem_total_kb / 1024))" "$reset"
+        fi
+    fi
 }
 
 # Check Bash version
@@ -250,44 +315,10 @@ if [[ $BASH_VERSION_NUM -lt 4 ]]; then
     exit 1
 fi
 
-# Load pinned versions from manifest file
-VERSIONS_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/config/tool_versions.txt"
-declare -A TOOL_VERSIONS=()
-if [[ -f "$VERSIONS_FILE" ]]; then
-    local_section=""
-    while IFS= read -r line; do
-        # Skip comments and empty lines
-        [[ -z "$line" || "$line" == \#* ]] && continue
-        # Track section headers
-        if [[ "$line" == "[repos]" ]]; then
-            local_section="repos"
-            continue
-        fi
-        if [[ "$line" == *=* ]]; then
-            local_key="${line%%=*}"
-            local_val="${line#*=}"
-            # Prefix repo keys to avoid collisions with go tool names
-            if [[ "$local_section" == "repos" ]]; then
-                TOOL_VERSIONS["repo:${local_key}"]="$local_val"
-            else
-                TOOL_VERSIONS["${local_key}"]="$local_val"
-            fi
-        fi
-    done < "$VERSIONS_FILE"
-fi
-
-# Helper: get pinned version for a tool (returns "latest" if not found)
-get_tool_version() {
-    local tool="$1"
-    local prefix="${2:-}"  # optional prefix like "repo:"
-    local ver="${TOOL_VERSIONS[${prefix}${tool}]:-latest}"
-    echo "$ver"
-}
-
-# Declare Go tools: name -> module path (version resolved from config/tool_versions.txt)
+# Declare Go tools: name -> module path (always installed @latest)
 declare -A gotools=(
     ["gf"]="github.com/tomnomnom/gf"
-    ["brutespray"]="github.com/x90skysn3k/brutespray"
+    ["brutespray"]="github.com/x90skysn3k/brutespray/v2"
     ["qsreplace"]="github.com/tomnomnom/qsreplace"
     ["ffuf"]="github.com/ffuf/ffuf/v2"
     ["github-subdomains"]="github.com/gwen001/github-subdomains"
@@ -322,7 +353,7 @@ declare -A gotools=(
     ["Web-Cache-Vulnerability-Scanner"]="github.com/Hackmanit/Web-Cache-Vulnerability-Scanner"
     ["subfinder"]="github.com/projectdiscovery/subfinder/v2/cmd/subfinder"
     ["hakip2host"]="github.com/hakluke/hakip2host"
-    ["mantra"]="github.com/Brosck/mantra"
+    ["mantra"]="github.com/brosck/mantra"
     ["crt"]="github.com/cemulus/crt"
     ["s3scanner"]="github.com/sa7mon/s3scanner"
     ["nmapurls"]="github.com/sdcampbell/nmapurls"
@@ -331,9 +362,11 @@ declare -A gotools=(
     ["hakoriginfinder"]="github.com/hakluke/hakoriginfinder"
     ["sourcemapper"]="github.com/denandz/sourcemapper"
     ["jsluice"]="github.com/BishopFox/jsluice/cmd/jsluice"
+    ["sj"]="github.com/BishopFox/sj"
     ["urlfinder"]="github.com/projectdiscovery/urlfinder/cmd/urlfinder"
-    ["cent"]="github.com/xm1k3/cent"
+    ["cent"]="github.com/xm1k3/cent/v2"
     ["csprecon"]="github.com/edoardottt/csprecon/cmd/csprecon"
+    ["exifray"]="github.com/mmarting/exifray"
     ["VhostFinder"]="github.com/wdahlenburg/VhostFinder"
     ["misconfig-mapper"]="github.com/intigriti/misconfig-mapper/cmd/misconfig-mapper"
     ["grpcurl"]="github.com/fullstorydev/grpcurl/cmd/grpcurl"
@@ -350,7 +383,7 @@ declare -A gotools=(
 # Declare uv tool-managed Python tools and their GitHub paths
 declare -A pipxtools=(
     ["dnsvalidator"]="vortexau/dnsvalidator"
-    ["interlace"]="codingo/Interlace"
+    ["interlace"]="pry0cc/interlace"
     ["wafw00f"]="EnableSecurity/wafw00f"
     ["commix"]="commixproject/commix"
     ["waymore"]="xnl-h4ck3r/waymore"
@@ -365,6 +398,7 @@ declare -A pipxtools=(
     ["gqlspection"]="doyensec/GQLSpection"
     ["postleaksNg"]="six2dez/postleaksNG"
     ["cewler"]="roys/cewler"
+    ["fray"]="dalisecurity/fray"
 )
 
 # Declare repositories and their paths
@@ -375,14 +409,13 @@ declare -A repos=(
     ["sus_params"]="g0ldencybersec/sus_params"
     ["CMSeeK"]="Tuhinshubhra/CMSeeK"
     ["massdns"]="blechschmidt/massdns"
-    ["testssl.sh"]="drwetter/testssl.sh"
+    ["testssl.sh"]="testssl/testssl.sh"
     ["JSA"]="w9w/JSA"
     ["cloud_enum"]="initstring/cloud_enum"
     ["ultimate-nmap-parser"]="shifty0g/ultimate-nmap-parser"
     ["gitdorks_go"]="damit5/gitdorks_go"
     ["Web-Cache-Vulnerability-Scanner"]="Hackmanit/Web-Cache-Vulnerability-Scanner"
     ["regulator"]="cramppet/regulator"
-    ["gitleaks"]="gitleaks/gitleaks"
     ["ghleaks"]="dinosn/ghleaks"
     ["trufflehog"]="trufflesecurity/trufflehog"
     ["nomore403"]="devploit/nomore403"
@@ -393,7 +426,6 @@ declare -A repos=(
     ["Spoofy"]="MattKeeley/Spoofy"
     ["msftrecon"]="Arcanum-Sec/msftrecon"
     ["Scopify"]="Arcanum-Sec/Scopify"
-    ["metagoofil"]="opsdisk/metagoofil"
     ["EmailHarvester"]="maldevel/EmailHarvester"
     ["reconftw_ai"]="six2dez/reconftw_ai"
     ["gato"]="praetorian-inc/gato"
@@ -420,9 +452,94 @@ function banner() {
 EOF
 }
 
+# Clone a GitHub repo with retry + cleanup between attempts.
+# Falls back to full clone if --filter=blob:none is unsupported.
+clone_repo() {
+    local gh_path="$1" dest="$2"
+    local url="https://github.com/${gh_path}"
+    local n=0 max=3 delay=3
+    while true; do
+        rm -rf "$dest" 2>/dev/null
+        if q_to 180 git clone --filter="blob:none" "$url" "$dest"; then
+            return 0
+        fi
+        # Fallback: try full clone (in case server/git version doesn't support partial clone)
+        rm -rf "$dest" 2>/dev/null
+        if q_to 180 git clone "$url" "$dest"; then
+            return 0
+        fi
+        n=$((n + 1))
+        if ((n >= max)); then return 1; fi
+        sleep $((delay * n))
+    done
+}
+
+function interlace_tool_python() {
+    local tool_python
+    tool_python="$(uv tool dir 2>/dev/null)/interlace/bin/python"
+    [[ -x "$tool_python" ]] || return 1
+    printf '%s\n' "$tool_python"
+}
+
+function interlace_colorclass_codes_path() {
+    local tool_python
+    tool_python="$(interlace_tool_python)" || return 1
+    "$tool_python" -c 'import importlib.util, os; spec = importlib.util.find_spec("colorclass"); print("" if spec is None or spec.origin is None else os.path.join(os.path.dirname(spec.origin), "codes.py"))' 2>/dev/null
+}
+
+function interlace_colorclass_imports_ok() {
+    local tool_python
+    tool_python="$(interlace_tool_python)" || return 1
+    "$tool_python" -c 'import colorclass' >/dev/null 2>&1
+}
+
+function ensure_interlace_colorclass_healthy() {
+    local cc_codes
+
+    if interlace_colorclass_imports_ok; then
+        return 0
+    fi
+
+    cc_codes="$(interlace_colorclass_codes_path)" || return 1
+    [[ -n "$cc_codes" && -f "$cc_codes" ]] || return 1
+
+    if grep -q 'from collections import Mapping' "$cc_codes"; then
+        sed -i.bak 's/from collections import Mapping/from collections.abc import Mapping/' "$cc_codes" || return 1
+        rm -f "${cc_codes}.bak" 2>/dev/null || true
+    fi
+
+    interlace_colorclass_imports_ok
+}
+
 # Function to install Go tools
 function install_tools() {
     header "Installing Golang tools (${#gotools[@]})"
+
+    # Force module-mode resolution so vendored or GOPATH-mode environments
+    # don't break go install for tools whose modules use SIV (e.g. /v2, /v3).
+    export GOFLAGS="-mod=mod"
+    export GO111MODULE="on"
+
+    # Load optional tool pins from ./tools.lock (D-12 / SEC-04).
+    # Each line: <binary>=<module>@<version>. Comments (#) and blank lines ignored.
+    # If a tool listed here is also in $gotools, the lock entry wins; otherwise
+    # `go install @latest` is used. Errors loading tools.lock are non-fatal.
+    declare -A pinned_tools=()
+    local _lockfile="${SCRIPTPATH:-$(pwd)}/tools.lock"
+    if [[ -f "$_lockfile" ]]; then
+        local _key _val
+        while IFS='=' read -r _key _val; do
+            # Strip surrounding whitespace; skip blanks/comments
+            _key="${_key#"${_key%%[![:space:]]*}"}"
+            _key="${_key%"${_key##*[![:space:]]}"}"
+            [[ -z "$_key" || "$_key" == \#* ]] && continue
+            _val="${_val#"${_val%%[![:space:]]*}"}"
+            _val="${_val%"${_val##*[![:space:]]}"}"
+            [[ -z "$_val" ]] && continue
+            pinned_tools["$_key"]="$_val"
+        done < "$_lockfile"
+        msg_ok "Loaded ${#pinned_tools[@]} pin(s) from tools.lock"
+    fi
 
     local go_step=0
     local failed_tools=()
@@ -430,12 +547,16 @@ function install_tools() {
     local go_ok=0 go_skip=0 go_fail=0
     for gotool in "${!gotools[@]}"; do
         ((++go_step))
-        # Build go install command with pinned version from manifest
-        local _go_ver
-        _go_ver=$(get_tool_version "$gotool")
-        local _go_cmd="go install -v ${gotools[$gotool]}@${_go_ver}"
+        # Pinned version wins; otherwise fall through to @latest.
+        local _module_at_version
+        if [[ -n "${pinned_tools[$gotool]:-}" ]]; then
+            _module_at_version="${pinned_tools[$gotool]}"
+        else
+            _module_at_version="${gotools[$gotool]}@latest"
+        fi
         # Always run go install so already-present binaries also get updated.
-        if q bash -lc "$_go_cmd"; then
+        # argv form (not bash -lc) so arr values are data, not shell syntax.
+        if q go install -v "$_module_at_version"; then
             ((++go_ok))
             msg_ok "[$go_step/$total_go] ${gotool} installed"
         else
@@ -463,13 +584,11 @@ function install_tools() {
     for pipxtool in "${!pipxtools[@]}"; do
         ((++pipx_step))
 
-        # Always use git+https URL for both install and upgrade to avoid PyPI lookups
-        # which fail for tools not on PyPI. Pin to version from manifest.
-        local _px_ver
-        _px_ver=$(get_tool_version "$pipxtool")
+        # Default to git+https for tools that are not published on PyPI.
+        # fray is published on PyPI and its old GitHub install URL is no longer available.
         local tool_url="git+https://github.com/${pipxtools[$pipxtool]}"
-        if [[ "$_px_ver" != "latest" && "$_px_ver" != "HEAD" ]]; then
-            tool_url="${tool_url}@${_px_ver}"
+        if [[ "$pipxtool" == "fray" ]]; then
+            tool_url="fray"
         fi
         
         # Prepare arguments array
@@ -483,6 +602,13 @@ function install_tools() {
         # Always force install/reinstall from the git URL
         # This handles both initial install and upgrades correctly
         if q uv tool install "${tool_args[@]}" "$tool_url" --force; then
+             if [[ "$pipxtool" == "interlace" ]] && ! ensure_interlace_colorclass_healthy; then
+                 failed_pipx_tools+=("$pipxtool")
+                 ((++px_fail))
+                 double_check=true
+                 msg_err "[$pipx_step/$total_px] ${pipxtool} failed health check"
+                 continue
+             fi
              ((++px_ok))
              msg_ok "[$pipx_step/$total_px] ${pipxtool} ready"
         else
@@ -533,8 +659,10 @@ function install_tools() {
         fi
         # Clone the repository (check for .git to detect incomplete clones)
         if [[ ! -d "${dir}/${repo}/.git" ]]; then
+            # Remove leftover directory from a previously failed clone attempt
+            [[ -d "${dir}/${repo}" ]] && rm -rf "${dir}/${repo}"
             msg_run "[$repos_step/${#repos[@]}] $repo (clone)"
-            retry 3 3 q_to 180 git clone --filter="blob:none" "https://github.com/${repos[$repo]}" "${dir}/${repo}"
+            clone_repo "${repos[$repo]}" "${dir}/${repo}"
             exit_status=$?
             if [[ $exit_status -ne 0 ]]; then
                 msg_err "[$repos_step/$total_repo] $repo clone failed"
@@ -555,6 +683,23 @@ function install_tools() {
             continue
         }
 
+        # Update origin URL if the entry in the repos array has changed (e.g. org rename)
+        local _expected_url="https://github.com/${repos[$repo]}"
+        local _current_url
+        _current_url=$(git remote get-url origin 2>/dev/null || echo "")
+        if [[ -n "$_current_url" && "${_current_url%.git}" != "${_expected_url%.git}" ]]; then
+            git remote set-url origin "$_expected_url" &>/dev/null || true
+        fi
+
+        # Return to default branch if stuck in detached HEAD (e.g. from a previous tag checkout)
+        if ! git symbolic-ref -q HEAD &>/dev/null; then
+            local _default_branch
+            _default_branch=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null | sed 's|refs/remotes/origin/||')
+            # Fallback to network lookup if local ref is missing
+            [[ -z "$_default_branch" ]] && _default_branch=$(git remote show origin 2>/dev/null | awk '/HEAD branch/{print $NF}')
+            [[ -n "$_default_branch" ]] && git checkout "$_default_branch" &>/dev/null || true
+        fi
+
         # Pull the latest changes
         msg_run "[$repos_step/${#repos[@]}] $repo (pull)"
         retry 3 3 q_to 60 git pull
@@ -565,16 +710,6 @@ function install_tools() {
             ((++repo_fail))
             double_check=true
             continue
-        fi
-
-        # Checkout pinned version from manifest if available
-        local _repo_ver
-        _repo_ver=$(get_tool_version "$repo" "repo:")
-        if [[ "$_repo_ver" != "latest" && "$_repo_ver" != "HEAD" ]]; then
-            git fetch --tags &>/dev/null || true
-            if ! git checkout "$_repo_ver" &>/dev/null; then
-                msg_warn "[$repos_step/$total_repo] $repo: could not checkout $_repo_ver, staying on HEAD"
-            fi
         fi
 
         # Install requirements inside a virtual environment
@@ -595,13 +730,6 @@ function install_tools() {
                     $SUDO cp bin/massdns /usr/local/bin/ &>/dev/null
                 fi
                 ;;
-            "gitleaks")
-                if ! make build &>/dev/null; then
-                    msg_warn "[$repos_step/$total_repo] $repo: make build failed"
-                else
-                    $SUDO cp ./gitleaks /usr/local/bin/ &>/dev/null
-                fi
-                ;;
             "ghleaks")
                 if ! go build -o ghleaks . &>/dev/null; then
                     msg_warn "[$repos_step/$total_repo] $repo: go build failed"
@@ -610,7 +738,6 @@ function install_tools() {
                 fi
                 ;;
             "nomore403")
-                go get &>/dev/null || true
                 if ! go build &>/dev/null; then
                     msg_warn "[$repos_step/$total_repo] $repo: go build failed"
                 else
@@ -627,7 +754,7 @@ function install_tools() {
                 fi
                 ;;
             "trufflehog")
-                go install &>/dev/null || msg_warn "[$repos_step/$total_repo] $repo: go install failed"
+                go install github.com/trufflesecurity/trufflehog/v3@latest &>/dev/null || msg_warn "[$repos_step/$total_repo] $repo: go install failed"
                 ;;
             "gato")
                 if [[ ! -d "venv" ]]; then
@@ -698,6 +825,7 @@ function install_tools() {
 function reset_git_proxies() {
     git config --global --unset http.proxy || true
     git config --global --unset https.proxy || true
+    export GIT_TERMINAL_PROMPT=0
 }
 
 # Function to check for updates
@@ -881,13 +1009,23 @@ function install_golang_version() {
         export GOPATH="${HOME}/go"
         export PATH="$GOPATH/bin:$GOROOT/bin:$HOME/.local/bin:$PATH"
 
-        if [[ -n ${profile_shell:-} ]]; then
-            local profile_path="${HOME}/${profile_shell}"
-            local marker="# Golang environment variables (reconFTW)"
+        # Write Go env to profile files so it's available in login shells.
+        # Use ~/.profile (sourced by all login shells including non-interactive bash -lc)
+        # rather than ~/.bashrc (which has a non-interactive guard on Debian/Ubuntu).
+        local marker="# Golang environment variables (reconFTW)"
+        local _go_env_block
+        _go_env_block=$(printf '%s\nexport GOROOT=/usr/local/go\nexport GOPATH=$HOME/go\nexport PATH=$GOPATH/bin:$GOROOT/bin:$HOME/.local/bin:$PATH\n' "$marker")
 
-            # Remove ALL previous golang env blocks (old-style and reconFTW-style)
-            # to prevent duplicates from accumulating across runs
-            if [[ -f "$profile_path" ]] && grep -q '^# Golang environment variables' "$profile_path" 2>/dev/null; then
+        local _profile_targets=()
+        # Always write to ~/.profile (login shell)
+        _profile_targets+=("${HOME}/.profile")
+        # Also write to the user's detected shell rc if different
+        if [[ -n ${profile_shell:-} && "${profile_shell}" != ".profile" ]]; then
+            _profile_targets+=("${HOME}/${profile_shell}")
+        fi
+
+        for _ptarget in "${_profile_targets[@]}"; do
+            if [[ -f "$_ptarget" ]] && grep -q '^# Golang environment variables' "$_ptarget" 2>/dev/null; then
                 local tmp_profile
                 tmp_profile=$(mktemp)
                 awk '
@@ -895,17 +1033,10 @@ function install_golang_version() {
                     skip > 0 && /^export (GOROOT|GOPATH|PATH)=/ { skip--; next }
                     skip > 0 { skip = 0 }
                     { print }
-                ' "$profile_path" > "$tmp_profile" && mv "$tmp_profile" "$profile_path"
+                ' "$_ptarget" > "$tmp_profile" && mv "$tmp_profile" "$_ptarget"
             fi
-
-            # Append single canonical block
-            {
-                printf '\n%s\n' "$marker"
-                printf 'export GOROOT=/usr/local/go\n'
-                printf 'export GOPATH=$HOME/go\n'
-                printf 'export PATH=$GOPATH/bin:$GOROOT/bin:$HOME/.local/bin:$PATH\n'
-            } >>"$profile_path"
-        fi
+            printf '\n%s\n' "$_go_env_block" >>"$_ptarget"
+        done
     else
         msg_warn "Golang will not be configured according to the user's preferences (install_golang=false in reconftw.cfg)."
     fi
@@ -1056,6 +1187,11 @@ function initial_setup() {
     if [[ $TOOLS_ONLY == "true" ]]; then
         header "Tools-only mode"
         with_spinner "Installing/validating Golang" install_golang_version
+        # Re-export Go env in current shell (with_spinner runs in background subshell, exports are lost)
+        export GOROOT=/usr/local/go
+        export GOPATH="${HOME}/go"
+        export PATH="$GOPATH/bin:$GOROOT/bin:$HOME/.local/bin:$PATH"
+
         mkdir -p ${HOME}/.gf
         mkdir -p "$tools"
         mkdir -p ${HOME}/.config/notify/
@@ -1076,6 +1212,11 @@ function initial_setup() {
     with_spinner "Installing system packages" install_system_packages
     check_network
     with_spinner "Installing/validating Golang" install_golang_version
+    # Re-export Go env in current shell (with_spinner runs in background subshell, exports are lost)
+    export GOROOT=/usr/local/go
+    export GOPATH="${HOME}/go"
+    export PATH="$GOPATH/bin:$GOROOT/bin:$HOME/.local/bin:$PATH"
+
     mkdir -p ${HOME}/.gf
     mkdir -p "$tools"
     mkdir -p ${HOME}/.config/notify/
@@ -1086,8 +1227,6 @@ function initial_setup() {
     q uv tool update-shell
     # Ensure $HOME/.local/bin is available now even if profile isn't sourced
     export PATH="${HOME}/.local/bin:${PATH}"
-    # Do not source user shell profiles here to avoid errors like 'PS1: unbound variable'
-    # in non-interactive shells with 'set -u'. PATH for this process is already updated.
 
     install_tools
     setup_reconftw_venv
@@ -1138,7 +1277,22 @@ function initial_setup() {
     header "Downloading required files"
 
     mkdir -p ${HOME}/.config/notify
-    # Download required files with error handling
+    # Download required files with error handling.
+    #
+    # Supply-chain note: helpers fetched from third-party repos or gists run
+    # inside reconFTW (axiom_config.sh is chmod +x, getjswords.py is invoked
+    # per-target). A compromise of `m4ll0k/Bug-Bounty-Toolz@master` or of the
+    # gist revision = code execution during install.
+    #
+    # You can pin any entry by exporting an expected SHA-256 before running
+    # install.sh:
+    #     export GETJSWORDS_SHA256=<64 hex chars>
+    #     export AXIOM_CONFIG_SHA256=<64 hex chars>
+    #     export RUSTUP_INSTALLER_SHA256=<64 hex chars>   # rustup-init.sh from https://sh.rustup.rs
+    #     export UV_INSTALLER_SHA256=<64 hex chars>       # uv installer from https://astral.sh/uv/install.sh
+    # If set, each download is verified with `verify_sha256` and the install
+    # aborts on mismatch. If unset the previous upstream-trusting behaviour is
+    # preserved for backwards compatibility.
 	    declare -A downloads=(
 	        ["notify_provider_config"]="https://gist.githubusercontent.com/six2dez/23a996bca189a11e88251367e6583053/raw ${HOME}/.config/notify/provider-config.yaml"
 	        ["getjswords"]="https://raw.githubusercontent.com/m4ll0k/Bug-Bounty-Toolz/master/getjswords.py ${tools}/getjswords.py"
@@ -1147,6 +1301,13 @@ function initial_setup() {
 	        ["resolvers"]="https://raw.githubusercontent.com/trickest/resolvers/main/resolvers.txt ${resolvers}"
 	        ["axiom_config"]="https://gist.githubusercontent.com/six2dez/6e2d9f4932fd38d84610eb851014b26e/raw ${tools}/axiom_config.sh"
 	    )
+
+    # Map of optional pinned checksums (env-var driven). Add more entries here
+    # to extend integrity checks. Empty string means "no verification".
+    declare -A download_sha256=(
+        ["getjswords"]="${GETJSWORDS_SHA256:-}"
+        ["axiom_config"]="${AXIOM_CONFIG_SHA256:-}"
+    )
 
     local dl_step=0
     local total_dl=${#downloads[@]}
@@ -1165,7 +1326,26 @@ function initial_setup() {
         mkdir -p "$(dirname "$destination")" 2>/dev/null || true
 
         if with_spinner "[$dl_step/$total_dl] Fetching $key" retry 3 3 q_to 120 wget -q -O "$destination" "$url"; then
-            msg_ok "[$dl_step/$total_dl] $key fetched"
+            # Optional integrity check (active only when a SHA is pinned).
+            local _expected="${download_sha256[$key]:-}"
+            if [[ -n "$_expected" ]]; then
+                if verify_sha256 "$destination" "$_expected"; then
+                    msg_ok "[$dl_step/$total_dl] $key fetched (sha256 verified)"
+                else
+                    msg_err "[$dl_step/$total_dl] $key sha256 mismatch for $url; refusing to install"
+                    rm -f "$destination"
+                    continue
+                fi
+            else
+                # No SHA pinned for this key — integrity check skipped.
+                # For a hardened install set the corresponding env var:
+                #   GETJSWORDS_SHA256=<hash>  or  AXIOM_CONFIG_SHA256=<hash>
+                if [[ -v "download_sha256[$key]" ]]; then
+                    msg_warn "[$dl_step/$total_dl] $key fetched (no sha256 pinned — integrity unverified)"
+                else
+                    msg_ok "[$dl_step/$total_dl] $key fetched"
+                fi
+            fi
         else
             msg_err "[$dl_step/$total_dl] Failed to download $key from $url"
             continue
